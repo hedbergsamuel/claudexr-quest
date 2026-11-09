@@ -1,4 +1,4 @@
-// claudexr-capture: small CLI used by the ClaudeXR bridge (0.3.0).
+// claudexr-capture: small CLI used by the ClaudeXR bridge (0.4.0).
 //
 //   list-windows                         JSON array of shareable windows
 //   display-info                         JSON geometry of the main display (points, pixels, millimetres)
@@ -7,6 +7,8 @@
 //        stderr: JSON events {"event":"started"|"first_frame"|"paused"|"resumed"|"error", ...}
 //                error events carry "code" (NSError.code) and "domain" when known.
 //        stdin : "K" = IDR now, "B <bps>" = bitrate
+//   serve                                0.4.0: all captures + window list in one process, JSON commands on stdin
+//                                        (protocol in Serve.swift). Preferred by the bridge; `stream` is kept as fallback.
 //   show-marker --modules 25 --bits 0101... --size-pt 600 --seconds 20
 //   stt-apple <file.wav> [--lang auto|sv-SE|en-US]   on-device speech recognition -> JSON {text, lang}
 //   brightness get [--display ID]        {"brightness":0.62,"displayId":N}   (built-in display)
@@ -15,9 +17,14 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+/// One event line on stderr. Serialized: in `serve` mode several captures emit from different threads, and a long
+/// line (the window list) must never be interleaved with another event.
+let emitLock = NSLock()
 func emit(_ obj: [String: Any]) {
   if let d = try? JSONSerialization.data(withJSONObject: obj), let s = String(data: d, encoding: .utf8) {
+    emitLock.lock()
     FileHandle.standardError.write((s + "\n").data(using: .utf8)!)
+    emitLock.unlock()
   }
 }
 
@@ -96,6 +103,12 @@ case "stream":
     }
   }
   app.run()
+case "serve":
+  // 0.4.0: every capture and the window list in ONE process (see Serve.swift for why and for the protocol).
+  warnIfScreenCaptureLooksDenied()
+  let server = Server()
+  server.run()
+  app.run()
 case "show-marker":
   Marker.run(
     modules: Int(arg("--modules") ?? "25") ?? 25, bits: arg("--bits") ?? "",
@@ -106,6 +119,6 @@ case "stt-apple":
 case "brightness":
   Brightness.run(args: Array(CommandLine.arguments.dropFirst(2)), displayArg: arg("--display").flatMap { UInt32($0) })
 default:
-  FileHandle.standardError.write("usage: claudexr-capture list-windows|display-info|stream|show-marker|stt-apple|brightness\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: claudexr-capture list-windows|display-info|stream|serve|show-marker|stt-apple|brightness\n".data(using: .utf8)!)
   exit(2)
 }

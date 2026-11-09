@@ -4,8 +4,24 @@ import Foundation
 import ScreenCaptureKit
 import VideoToolbox
 
-/// Window/display capture -> low-latency H.264 -> framed Annex-B on stdout. Compiled, but stream is UNTESTED on a real screen.
+/// All stdout writes in the process go through ONE serial queue, so frames from several captures never interleave.
+enum CaptureOutput {
+  static let queue = DispatchQueue(label: "claudexr.out")
+}
+
+/// Window/display capture -> low-latency H.264 -> framed Annex-B on stdout.
+/// Two ways to run (0.4.0):
+///  * legacy `stream`: one capture per process (sid == nil); errors end the process.
+///  * `serve`: many captures in ONE process (sid set); frames and events carry the sid, and an error only ends
+///    that capture. This exists because separate helper processes interrupt each other's ScreenCaptureKit streams
+///    (-3805), which made every new window stream replace the previous one (BUG-2e4ecb, BUG-2153ff, BUG-9e3e1b).
 final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
+  /// nil = legacy single-capture process
+  let sid: String?
+  /// serve mode: called once when this capture has ended (stopped or failed)
+  var onEnd: ((Capture) -> Void)?
+  private var ended = false // guarded by `state`
+  private var observers: [NSObjectProtocol] = []
   let windowID: UInt32?
   let displayID: UInt32?
   let excludeBundles: [String]
@@ -15,7 +31,6 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
 
   private var stream: SCStream?
   private var session: VTCompressionSession?
-  private let out = DispatchQueue(label: "claudexr.out") // serializes stdout writes
   private let captureQueue = DispatchQueue(label: "claudexr.capture")
   // Review 2 R2-07: these were written from the stdin thread / main queue and read on the capture queue
   // (data race; an IDR request could be lost). All access now goes through `state`.
@@ -48,13 +63,21 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   private var idleTimer: DispatchSourceTimer?
   private var firstFrameEmitted = false // guarded by `state`
 
-  init(windowID: UInt32?, displayID: UInt32?, excludeBundles: [String], fps: Int, bitrate: Int, maxWidth: Int) {
+  init(windowID: UInt32?, displayID: UInt32?, excludeBundles: [String], fps: Int, bitrate: Int, maxWidth: Int, sid: String? = nil) {
+    self.sid = sid
     self.windowID = windowID
     self.displayID = displayID
     self.excludeBundles = excludeBundles
     self.fps = max(5, min(60, fps))
     self.bitrate = bitrate
     self.maxWidth = maxWidth
+  }
+
+  /// Event on stderr; carries the sid in serve mode.
+  private func ev(_ obj: [String: Any]) {
+    var o = obj
+    if let sid { o["sid"] = sid }
+    emit(o)
   }
 
   static func listWindows() async throws -> [[String: Any]] {
@@ -107,9 +130,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     try await s.startCapture()
     stream = s
     observeLock()
-    readStdin()
+    if sid == nil { readStdin() } // serve mode: the server owns stdin
     startIdleTimer()
-    emit(["event": "started", "width": w, "height": h])
+    ev(["event": "started", "width": w, "height": h])
   }
 
   // MARK: encoder
@@ -153,9 +176,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     let secure = IsSecureEventInputEnabled()
     if secure != secureInput {
       secureInput = secure
-      if secure { emit(["event": "paused", "reason": "secure_input"]) } else {
+      if secure { ev(["event": "paused", "reason": "secure_input"]) } else {
         forceKey = true
-        emit(["event": "resumed"])
+        ev(["event": "resumed"])
       }
     }
     return secure
@@ -234,19 +257,29 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
       off += nalLen
     }
     let ptsUs = UInt64(max(0, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) * 1_000_000))
-    var header = Data(count: 13)
+    // legacy: [u32 len][u64 pts][u8 flags][payload]
+    // serve : [u32 len][u8 sidLen][sid][u64 pts][u8 flags][payload]   (len = everything after the u32)
+    let sidBytes = Array((sid ?? "").utf8)
+    let pre = sid == nil ? 0 : 1 + sidBytes.count
+    var header = Data(count: 13 + pre)
     header.withUnsafeMutableBytes { p in
-      p.storeBytes(of: UInt32(9 + annexB.count).bigEndian, toByteOffset: 0, as: UInt32.self)
-      p.storeBytes(of: ptsUs.bigEndian, toByteOffset: 4, as: UInt64.self)
-      p.storeBytes(of: UInt8(key ? 1 : 0), toByteOffset: 12, as: UInt8.self)
+      p.storeBytes(of: UInt32(pre + 9 + annexB.count).bigEndian, toByteOffset: 0, as: UInt32.self)
+      if pre > 0 {
+        p.storeBytes(of: UInt8(sidBytes.count), toByteOffset: 4, as: UInt8.self)
+        for (i, b) in sidBytes.enumerated() { p.storeBytes(of: b, toByteOffset: 5 + i, as: UInt8.self) }
+      }
+      p.storeBytes(of: ptsUs.bigEndian, toByteOffset: 4 + pre, as: UInt64.self)
+      p.storeBytes(of: UInt8(key ? 1 : 0), toByteOffset: 12 + pre, as: UInt8.self)
     }
     state.lock()
     let first = !firstFrameEmitted
     firstFrameEmitted = true
+    let dead = ended
     state.unlock()
-    out.async {
+    if dead { return } // a stopped capture must not leak late frames
+    CaptureOutput.queue.async {
       FileHandle.standardOutput.write(header + annexB)
-      if first { emit(["event": "first_frame"]) }
+      if first { self.ev(["event": "first_frame"]) }
     }
   }
 
@@ -258,38 +291,82 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
       while let line = readLine() {
         let t = line.trimmingCharacters(in: .whitespaces)
         if t == "K" {
-          self.forceKey = true
-          // Static content produces no new frames: re-encode the last one as an IDR right away.
-          self.captureQueue.async { self.reencodeLast(idleFor: 0) }
-        } else if t.hasPrefix("B "), let b = Int(t.dropFirst(2)), let s = self.session {
-          self.bitrate = b
-          VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: b as CFNumber)
+          self.requestKeyframe()
+        } else if t.hasPrefix("B "), let b = Int(t.dropFirst(2)) {
+          self.setBitrate(b)
         }
       }
       exit(0) // bridge closed our stdin: stop
     }.start()
   }
 
+  /// IDR now. Static content produces no new frames: the last one is re-encoded as an IDR right away.
+  func requestKeyframe() {
+    forceKey = true
+    captureQueue.async { self.reencodeLast(idleFor: 0) }
+  }
+
+  func setBitrate(_ b: Int) {
+    captureQueue.async {
+      guard let s = self.session else { return }
+      self.bitrate = b
+      VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: b as CFNumber)
+    }
+  }
+
+  /// serve mode: end this capture only (the process and the other captures live on). Safe to call twice.
+  func stop(reportStopped: Bool = true) {
+    state.lock()
+    let already = ended
+    ended = true
+    state.unlock()
+    if already { return }
+    let c = DistributedNotificationCenter.default()
+    for o in observers { c.removeObserver(o) }
+    observers.removeAll()
+    idleTimer?.cancel()
+    idleTimer = nil
+    let s = stream
+    stream = nil
+    captureQueue.async {
+      if let session = self.session {
+        VTCompressionSessionInvalidate(session)
+        self.session = nil
+      }
+      self.lastPixel = nil
+    }
+    Task {
+      try? await s?.stopCapture()
+      if reportStopped { self.ev(["event": "stopped"]) }
+      self.onEnd?(self)
+    }
+  }
+
   /// Pause (send nothing) while the Mac is locked or the screen saver runs.
   private func observeLock() {
     let c = DistributedNotificationCenter.default()
-    let pause: (String) -> Void = { reason in
+    let pause: (String) -> Void = { [weak self] reason in
+      guard let self else { return }
       self.paused = true
-      emit(["event": "paused", "reason": reason])
+      self.ev(["event": "paused", "reason": reason])
     }
-    let resume: () -> Void = {
+    let resume: () -> Void = { [weak self] in
+      guard let self else { return }
       self.paused = false
       self.forceKey = true
-      emit(["event": "resumed"])
+      self.ev(["event": "resumed"])
     }
-    c.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { _ in pause("screen_locked") }
-    c.addObserver(forName: .init("com.apple.screensaver.didstart"), object: nil, queue: .main) { _ in pause("screensaver") }
-    c.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in resume() }
-    c.addObserver(forName: .init("com.apple.screensaver.didstop"), object: nil, queue: .main) { _ in resume() }
+    observers = [
+      c.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { _ in pause("screen_locked") },
+      c.addObserver(forName: .init("com.apple.screensaver.didstart"), object: nil, queue: .main) { _ in pause("screensaver") },
+      c.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in resume() },
+      c.addObserver(forName: .init("com.apple.screensaver.didstop"), object: nil, queue: .main) { _ in resume() },
+    ]
   }
 
   func stream(_ stream: SCStream, didStopWithError error: Error) {
-    emit(errorEvent(error))
-    exit(1)
+    ev(errorEvent(error))
+    if sid == nil { exit(1) } // legacy: one capture per process
+    stop(reportStopped: false) // serve: only this capture ends; the bridge already got the error event
   }
 }

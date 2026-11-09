@@ -53,7 +53,8 @@ export interface StreamHandle {
   state: "starting" | "live" | "paused" | "stopped" | "error";
   width: number;
   height: number;
-  proc: ChildProcess;
+  /** perStream mode only: this stream's own helper process (shared mode: one process for all, see StreamManager) */
+  proc?: ChildProcess;
   panelId?: string;
   maxWidth: number;
   bitrate: number;
@@ -81,13 +82,65 @@ export interface StreamCallbacks {
   onFrame(streamId: string, ptsUs: bigint, flags: number, payload: Buffer): void;
 }
 
+/**
+ * How the Mac helper is run (0.4.0):
+ *  "shared"    = ONE long-lived `claudexr-capture serve` process owns every capture and the window list (default).
+ *  "perStream" = one helper process per stream (0.3.x). Kept as fallback/rollback only: separate helper processes
+ *                interrupt each other's ScreenCaptureKit streams (-3805), so every new window stream (and even
+ *                `list-windows`) killed the streams that were already running (BUG-2e4ecb, BUG-2153ff, BUG-9e3e1b).
+ */
+export type HelperMode = "shared" | "perStream";
+
+interface StartOpts {
+  title: string;
+  key?: string;
+  source: "window" | "display";
+  windowId?: number;
+  displayId?: number;
+  excludeBundles: string[];
+  fps: number;
+  bitrateMbps: number;
+  maxWidth: number;
+}
+
+type HelperEvent = { event?: string; sid?: string; rid?: string; reason?: string; width?: number; height?: number; message?: string; code?: number | string; windows?: WindowInfo[] };
+
+interface ServeProc {
+  proc: ChildProcess;
+  ready: boolean;
+  lists: Map<string, { resolve: (w: WindowInfo[]) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
+  /** frames that arrived for a sid we no longer know (a capture that did not stop) */
+  stray: Map<string, number>;
+  idleTimer?: NodeJS.Timeout;
+}
+
+/** A shared helper without streams is ended after this long, so the next start gets a fresh process (new TCC state). */
+const SERVE_IDLE_MS = Number(process.env.CLAUDEXR_SERVE_IDLE_MS || 3000);
+const STRAY_RESEND_STOP = 60;
+const STRAY_KILL = 600;
+
 export class StreamManager {
   streams = new Map<string, StreamHandle>();
+  private serve?: ServeProc;
+  /** the installed helper is older than 0.4.0 (no `serve` command): per-stream processes are used instead */
+  private serveUnsupported = false;
+  private opts = new Map<string, StartOpts>();
+  /** handles that live in the shared helper */
+  private shared = new Set<string>();
 
-  constructor(private readonly bin: string, private readonly cb: StreamCallbacks) {}
+  constructor(private readonly bin: string, private readonly cb: StreamCallbacks, private readonly mode: HelperMode = "shared") {}
 
   available(): boolean {
     return fs.existsSync(this.bin);
+  }
+
+  /** "shared" | "perStream" | "perStream (old helper)": shown in xr_status so a missing rebuild is visible. */
+  helperMode(): string {
+    return this.mode === "perStream" ? "perStream" : this.serveUnsupported ? "perStream (old helper: rebuild mac-helper for several simultaneous streams)" : "shared";
+  }
+
+  private useShared(): boolean {
+    return this.mode === "shared" && !this.serveUnsupported;
   }
 
   private helperMissing(): Error {
@@ -110,28 +163,248 @@ export class StreamManager {
     });
   }
 
+  /**
+   * Shared mode: the list comes from the SAME process as the captures. (A separate `list-windows` process is one of
+   * the things that interrupted running streams in 0.3.x.)
+   */
   listWindows(): Promise<WindowInfo[]> {
-    return this.runJson<WindowInfo[]>(["list-windows"]);
+    if (!this.useShared()) return this.runJson<WindowInfo[]>(["list-windows"]);
+    if (!this.available()) return Promise.reject(this.helperMissing());
+    const sv = this.ensureServe();
+    const rid = randomUUID().slice(0, 8);
+    return new Promise<WindowInfo[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        sv.lists.delete(rid);
+        this.scheduleServeIdle();
+        reject(new Error("list-windows failed: no answer from the Mac helper within 10 s"));
+      }, 10_000);
+      sv.lists.set(rid, { resolve, reject, timer });
+      this.serveSend(sv, { cmd: "list", rid });
+    });
   }
 
-  start(opts: {
-    title: string;
-    key?: string;
-    source: "window" | "display";
-    windowId?: number;
-    displayId?: number;
-    excludeBundles: string[];
-    fps: number;
-    bitrateMbps: number;
-    maxWidth: number;
-  }): StreamHandle {
-    if (!this.available()) throw this.helperMissing();
-    const args = ["stream"];
-    if (opts.source === "window") args.push("--window", String(opts.windowId));
-    else args.push("--display", String(opts.displayId ?? 0), "--exclude-bundles", opts.excludeBundles.join(","));
-    args.push("--fps", String(opts.fps), "--bitrate", String(Math.round(opts.bitrateMbps * 1_000_000)), "--max-width", String(opts.maxWidth));
-    const proc = spawn(this.bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+  // ---------------- shared helper process ----------------
+
+  private serveSend(sv: ServeProc, cmd: Record<string, unknown>) {
+    sv.proc.stdin?.write(JSON.stringify(cmd) + "\n");
+  }
+
+  private ensureServe(): ServeProc {
+    if (this.serve) {
+      clearTimeout(this.serve.idleTimer);
+      return this.serve;
+    }
+    const proc = spawn(this.bin, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
     proc.stdin!.on("error", () => {});
+    const sv: ServeProc = { proc, ready: false, lists: new Map(), stray: new Map() };
+    this.serve = sv;
+    const q = new ByteQueue();
+    proc.stdout!.on("data", (chunk: Buffer) => {
+      q.push(chunk);
+      for (;;) {
+        if (q.length < 4) break;
+        const len = q.peekUInt32BE();
+        if (len < 10 || len > 16 * 1024 * 1024) {
+          logError("spegling", `bad frame length ${len} from the shared helper, restarting it`);
+          proc.kill("SIGTERM");
+          return;
+        }
+        if (q.length < 4 + len) break;
+        const frame = q.take(4 + len);
+        const sidLen = frame.readUInt8(4);
+        if (sidLen > 32 || 5 + sidLen + 9 > frame.length) {
+          logError("spegling", "bad frame header from the shared helper, restarting it");
+          proc.kill("SIGTERM");
+          return;
+        }
+        const sid = frame.toString("ascii", 5, 5 + sidLen);
+        const o = 5 + sidLen;
+        const h = this.streams.get(sid);
+        if (!h || !this.shared.has(sid)) {
+          this.onStrayFrame(sv, sid);
+          continue;
+        }
+        h.framesOut++;
+        h.lastFrameAt = Date.now();
+        // Paused streams must not leak frames even if the helper misbehaves.
+        if (h.state === "live") this.cb.onFrame(sid, frame.readBigUInt64BE(o), frame.readUInt8(o + 8), frame.subarray(o + 9));
+      }
+    });
+    this.readEvents(proc, (ev) => {
+      if (ev.event === "serve_ready") {
+        sv.ready = true;
+        return;
+      }
+      if (ev.event === "windows" || ev.event === "list_error") {
+        const l = sv.lists.get(ev.rid ?? "");
+        if (!l) return;
+        sv.lists.delete(ev.rid ?? "");
+        clearTimeout(l.timer);
+        if (ev.event === "windows") l.resolve(ev.windows ?? []);
+        else l.reject(new Error(`list-windows failed: ${ev.message ?? "unknown error"}`));
+        this.scheduleServeIdle();
+        return;
+      }
+      if (ev.event === "warning") return void log("helper:", ev.message ?? "");
+      if (ev.sid === undefined) {
+        if (ev.event === "error") logError("spegling", `helper error: ${ev.message}`);
+        return;
+      }
+      if (ev.event === "stopped") sv.stray.delete(ev.sid);
+      const h = this.streams.get(ev.sid);
+      if (!h || !this.shared.has(ev.sid)) return;
+      if (ev.event === "stopped") {
+        // The helper ended the capture on its own (we did not ask: stop() removes the handle first).
+        this.forget(h);
+        this.setState(h, "stopped");
+        this.scheduleServeIdle();
+        return;
+      }
+      this.onHelperEvent(h, ev);
+      if (ev.event === "error") {
+        // In the shared helper an error ends only this capture; the others keep running.
+        this.forget(h);
+        this.scheduleServeIdle();
+      }
+    });
+    proc.on("error", (e) => this.onServeGone(sv, null, e.message));
+    proc.on("exit", (code) => this.onServeGone(sv, code));
+    return sv;
+  }
+
+  private onServeGone(sv: ServeProc, code: number | null, spawnError?: string) {
+    if (this.serve === sv) this.serve = undefined;
+    clearTimeout(sv.idleTimer);
+    const mine = [...this.shared].map((id) => this.streams.get(id)).filter((h): h is StreamHandle => !!h);
+    const lists = [...sv.lists.values()];
+    sv.lists.clear();
+    // An older helper (0.3.x) does not know "serve": it prints its usage and exits with 2 before "serve_ready".
+    if (!sv.ready && code === 2 && !spawnError) {
+      if (!this.serveUnsupported) {
+        this.serveUnsupported = true;
+        logError(
+          "spegling",
+          "Mac-hjälparen är äldre än 0.4.0 (saknar kommandot serve): flera samtidiga fönsterströmmar fungerar inte förrän den byggs om (cd mac-helper && ./build.sh, tillåt sedan skärminspelning på nytt). Kör tills dess som i 0.3.x.",
+        );
+      }
+      for (const l of lists) {
+        clearTimeout(l.timer);
+        this.runJson<WindowInfo[]>(["list-windows"]).then(l.resolve, l.reject);
+      }
+      for (const h of mine) {
+        this.shared.delete(h.streamId);
+        const o = this.opts.get(h.streamId);
+        if (o && h.state === "starting") this.spawnPerStream(h, o);
+      }
+      return;
+    }
+    for (const l of lists) {
+      clearTimeout(l.timer);
+      l.reject(new Error(`list-windows failed: the Mac helper ended (${spawnError ?? `exit ${code}`})`));
+    }
+    if (mine.length && code) logError("spegling", `capture helper exited with code ${code}`);
+    for (const h of mine) {
+      this.forget(h);
+      if (h.state !== "stopped" && h.state !== "error") {
+        h.errorMessage = spawnError ?? `the Mac helper ended (exit ${code})`;
+        this.setState(h, "error", spawnError ? `could not start the helper: ${spawnError}` : `Mac-hjälparen avslutades (exit ${code}); strömmen "${h.title}" stoppades.`);
+      }
+    }
+  }
+
+  /** A capture we stopped keeps sending: ask again, and as a last resort end the whole helper (privacy first). */
+  private onStrayFrame(sv: ServeProc, sid: string) {
+    const n = (sv.stray.get(sid) ?? 0) + 1;
+    sv.stray.set(sid, n);
+    if (n === STRAY_RESEND_STOP) this.serveSend(sv, { cmd: "stop", sid });
+    else if (n === STRAY_KILL) {
+      logError("spegling", `the Mac helper keeps capturing stream ${sid} after stop: ending the helper process`);
+      sv.proc.kill("SIGTERM");
+    }
+  }
+
+  /** No streams and no pending list: end the shared helper soon (a fresh process picks up changed permissions). */
+  private scheduleServeIdle() {
+    const sv = this.serve;
+    if (!sv) return;
+    clearTimeout(sv.idleTimer);
+    if (this.shared.size || sv.lists.size) return;
+    sv.idleTimer = setTimeout(() => {
+      if (this.serve !== sv || this.shared.size || sv.lists.size) return;
+      this.serve = undefined;
+      sv.proc.stdin?.end(); // the helper exits when its stdin closes
+      const t = setTimeout(() => sv.proc.kill("SIGTERM"), 2000);
+      t.unref?.();
+      sv.proc.once("exit", () => clearTimeout(t));
+    }, SERVE_IDLE_MS);
+    sv.idleTimer.unref?.();
+  }
+
+  private forget(h: StreamHandle) {
+    this.streams.delete(h.streamId);
+    this.shared.delete(h.streamId);
+    this.opts.delete(h.streamId);
+  }
+
+  /** End the shared helper (bridge shutdown). */
+  shutdown() {
+    this.stop();
+    const sv = this.serve;
+    this.serve = undefined;
+    if (!sv) return;
+    clearTimeout(sv.idleTimer);
+    for (const l of sv.lists.values()) {
+      clearTimeout(l.timer);
+      l.reject(new Error("bridge is shutting down"));
+    }
+    sv.lists.clear();
+    sv.proc.kill("SIGTERM");
+  }
+
+  // ---------------- events shared by both modes ----------------
+
+  private readEvents(proc: ChildProcess, onEvent: (ev: HelperEvent) => void) {
+    let errBuf = "";
+    proc.stderr!.on("data", (chunk: Buffer) => {
+      errBuf += chunk.toString();
+      let nl: number;
+      while ((nl = errBuf.indexOf("\n")) >= 0) {
+        const line = errBuf.slice(0, nl).trim();
+        errBuf = errBuf.slice(nl + 1);
+        if (!line) continue;
+        let ev: HelperEvent;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          log("helper:", line);
+          continue;
+        }
+        if (ev && typeof ev === "object") onEvent(ev);
+      }
+    });
+  }
+
+  private onHelperEvent(h: StreamHandle, ev: HelperEvent) {
+    if (ev.event === "started") {
+      h.width = ev.width ?? 0;
+      h.height = ev.height ?? 0;
+      this.setState(h, "live");
+    } else if (ev.event === "paused") {
+      h.pausedReason = ev.reason;
+      this.setState(h, "paused", ev.reason);
+    } else if (ev.event === "resumed") {
+      h.pausedReason = undefined;
+      this.setState(h, "live");
+    } else if (ev.event === "error") {
+      h.errorCode = ev.code !== undefined ? String(ev.code) : /Code=(-?\d+)/.exec(ev.message ?? "")?.[1];
+      h.errorMessage = ev.message;
+      logError("spegling", `helper error: ${ev.message}`);
+      this.setState(h, "error", describeStreamError(h.errorCode, ev.message, h.title));
+    }
+  }
+
+  start(opts: StartOpts): StreamHandle {
+    if (!this.available()) throw this.helperMissing();
     const bitrate = Math.round(opts.bitrateMbps * 1_000_000);
     const h: StreamHandle = {
       streamId: randomUUID().slice(0, 8),
@@ -144,12 +417,36 @@ export class StreamManager {
       state: "starting",
       width: 0,
       height: 0,
-      proc,
       maxWidth: opts.maxWidth,
       bitrate,
       maxBitrate: bitrate,
     };
     this.streams.set(h.streamId, h);
+    this.opts.set(h.streamId, opts);
+    if (this.useShared()) {
+      const sv = this.ensureServe();
+      this.shared.add(h.streamId);
+      this.serveSend(sv, {
+        cmd: "start",
+        sid: h.streamId,
+        ...(opts.source === "window" ? { window: opts.windowId } : { display: opts.displayId ?? 0, excludeBundles: opts.excludeBundles }),
+        fps: opts.fps,
+        bitrate,
+        maxWidth: opts.maxWidth,
+      });
+    } else this.spawnPerStream(h, opts);
+    return h;
+  }
+
+  /** 0.3.x way: one helper process for this stream. */
+  private spawnPerStream(h: StreamHandle, opts: StartOpts) {
+    const args = ["stream"];
+    if (opts.source === "window") args.push("--window", String(opts.windowId));
+    else args.push("--display", String(opts.displayId ?? 0), "--exclude-bundles", opts.excludeBundles.join(","));
+    args.push("--fps", String(opts.fps), "--bitrate", String(h.bitrate), "--max-width", String(opts.maxWidth));
+    const proc = spawn(this.bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    proc.stdin!.on("error", () => {});
+    h.proc = proc;
 
     // Review P1: no Buffer.concat per chunk (O(n^2) on big keyframes): keep chunks, copy once per frame.
     const q = new ByteQueue();
@@ -173,39 +470,7 @@ export class StreamManager {
         if (h.state === "live") this.cb.onFrame(h.streamId, pts, flags, frame.subarray(13));
       }
     });
-    let errBuf = "";
-    proc.stderr!.on("data", (chunk: Buffer) => {
-      errBuf += chunk.toString();
-      let nl: number;
-      while ((nl = errBuf.indexOf("\n")) >= 0) {
-        const line = errBuf.slice(0, nl).trim();
-        errBuf = errBuf.slice(nl + 1);
-        if (!line) continue;
-        let ev: { event?: string; reason?: string; width?: number; height?: number; message?: string; code?: number | string };
-        try {
-          ev = JSON.parse(line);
-        } catch {
-          log("helper:", line);
-          continue;
-        }
-        if (ev.event === "started") {
-          h.width = ev.width ?? 0;
-          h.height = ev.height ?? 0;
-          this.setState(h, "live");
-        } else if (ev.event === "paused") {
-          h.pausedReason = ev.reason;
-          this.setState(h, "paused", ev.reason);
-        } else if (ev.event === "resumed") {
-          h.pausedReason = undefined;
-          this.setState(h, "live");
-        } else if (ev.event === "error") {
-          h.errorCode = ev.code !== undefined ? String(ev.code) : /Code=(-?\d+)/.exec(ev.message ?? "")?.[1];
-          h.errorMessage = ev.message;
-          logError("spegling", `helper error: ${ev.message}`);
-          this.setState(h, "error", describeStreamError(h.errorCode, ev.message, h.title));
-        }
-      }
-    });
+    this.readEvents(proc, (ev) => this.onHelperEvent(h, ev));
     proc.on("error", (e) => {
       h.errorMessage = e.message;
       if (h.state !== "stopped" && h.state !== "error") this.setState(h, "error", `could not start the helper: ${e.message}`);
@@ -215,21 +480,24 @@ export class StreamManager {
         if (code) logError("spegling", `capture helper exited with code ${code}`);
         this.setState(h, code ? "error" : "stopped", code ? `exit ${code}` : undefined);
       }
-      this.streams.delete(h.streamId);
+      if (this.streams.get(h.streamId) === h) this.forget(h);
     });
-    return h;
   }
 
   /** Ask the encoder for an IDR frame (after drops or a decoder reset). */
   requestKeyframe(streamId: string) {
-    this.streams.get(streamId)?.proc.stdin?.write("K\n");
+    const h = this.streams.get(streamId);
+    if (!h) return;
+    if (this.shared.has(streamId)) this.serve && this.serveSend(this.serve, { cmd: "key", sid: streamId });
+    else h.proc?.stdin?.write("K\n");
   }
 
   setBitrate(streamId: string, bps: number) {
     const h = this.streams.get(streamId);
     if (!h) return;
     h.bitrate = Math.round(bps);
-    h.proc.stdin?.write(`B ${h.bitrate}\n`);
+    if (this.shared.has(streamId)) this.serve && this.serveSend(this.serve, { cmd: "bitrate", sid: streamId, bps: h.bitrate });
+    else h.proc?.stdin?.write(`B ${h.bitrate}\n`);
   }
 
   private setState(h: StreamHandle, s: StreamHandle["state"], reason?: string) {
@@ -243,11 +511,14 @@ export class StreamManager {
     for (const id of ids) {
       const h = this.streams.get(id);
       if (!h) continue;
+      const wasShared = this.shared.has(id);
+      this.forget(h);
       this.setState(h, "stopped");
-      h.proc.kill("SIGTERM");
-      this.streams.delete(id);
+      if (wasShared) this.serve && this.serveSend(this.serve, { cmd: "stop", sid: id });
+      else h.proc?.kill("SIGTERM");
       stopped.push(id);
     }
+    if (stopped.length) this.scheduleServeIdle();
     return stopped;
   }
 }

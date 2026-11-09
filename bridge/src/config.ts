@@ -66,6 +66,8 @@ export interface XrConfig {
   display: DisplayConfig;
   /** hard limit of simultaneous streams (display + windows) */
   maxStreams: number;
+  /** 0.4.0: "shared" = one helper process for all streams (default); "perStream" = 0.3.x behaviour (rollback) */
+  helperMode: "shared" | "perStream";
   stream: StreamPolicy;
   bugsDir: string;
   captureBin: string;
@@ -104,7 +106,7 @@ export const DEFAULT_STREAM_POLICY: StreamPolicy = {
  */
 export function loadConfig(): XrConfig {
   const file = path.join(stateDir(), "config.json");
-  let raw: Partial<{ devMode: boolean; display: Partial<DisplayConfig>; maxStreams: number; stream: Partial<StreamPolicy>; bugsDir: string; captureBin: string; autoPanels: boolean; xrPermissions: boolean; permissionTimeoutS: number; voice: Partial<VoiceConfig> }> = {};
+  let raw: Partial<{ helperMode: string; devMode: boolean; display: Partial<DisplayConfig>; maxStreams: number; stream: Partial<StreamPolicy>; bugsDir: string; captureBin: string; autoPanels: boolean; xrPermissions: boolean; permissionTimeoutS: number; voice: Partial<VoiceConfig> }> = {};
   if (fs.existsSync(file)) {
     try {
       raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -135,6 +137,7 @@ export function loadConfig(): XrConfig {
       dimLevel: Math.max(0, Math.min(0.5, Number(raw.display?.dimLevel ?? 0))),
     },
     maxStreams: Math.max(1, Math.min(8, Number(process.env.CLAUDEXR_MAX_STREAMS ?? raw.maxStreams ?? 4))),
+    helperMode: (process.env.CLAUDEXR_HELPER_MODE ?? raw.helperMode) === "perStream" ? "perStream" : "shared",
     voice: {
       engine: (process.env.CLAUDEXR_STT_ENGINE as VoiceConfig["engine"]) || raw.voice?.engine || "whisper-cpp",
       whisperBin: resolveBin(process.env.CLAUDEXR_WHISPER_BIN || raw.voice?.whisperBin || "whisper-cli"), // brew install whisper-cpp

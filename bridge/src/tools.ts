@@ -42,6 +42,7 @@ export function statusLine(s: XrStatus | null): string {
   const streams = s.streams.map((x) => `stream ${x.streamId} ${x.source ?? ""} ${x.state}${x.panelId ? ` panel ${x.panelId}` : ""} "${x.title.slice(0, 30)}"`);
   const d = s.display;
   const extra = d ? [`display: ${d.alwaysOn ? "always on" : "manual"}${d.suppressed ? " (stopped; restarts on reconnect/xr_stream display)" : ""}${d.dimEnabled ? `, dimming ${d.dimmed ? "ACTIVE" : "off now"}` : ""}; mic ${s.mic?.listening ? "listening" : "idle"}`] : [];
+  if (s.helperMode && s.helperMode !== "shared") extra.push(`helper: ${s.helperMode}`);
   return [`XR connected: ${s.device} (app ${s.appVersion ?? "?"}), layout ${s.layoutMode}, ${s.openPanels.length} panel(s)`, ...panels, ...streams, ...extra].join("\n");
 }
 

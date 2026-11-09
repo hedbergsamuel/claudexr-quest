@@ -179,6 +179,8 @@ export interface XrStatus {
   /** 0.3.0 */
   display?: { alwaysOn: boolean; suppressed: boolean; approved: boolean; dimmed: boolean; dimEnabled: boolean };
   mic?: { listening: boolean };
+  /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */
+  helperMode?: string;
   bridge: { version: string; host: string; port: number; localPort: number; lanAddresses: string[]; mdnsType: string; pid: number; tlsFingerprint: string };
 }
 

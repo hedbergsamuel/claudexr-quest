@@ -179,14 +179,18 @@ export class XrHub {
       }
       this.wss.handleUpgrade(req, socket, head, (ws) => this.onHeadset(ws, req));
     });
-    this.streams = new StreamManager(o.config.captureBin, {
-      onState: (h, reason) => this.onStreamState(h, reason),
-      onFrame: (id, pts, flags, payload) => {
-        this.flowFor(id).onFrame(pts, flags, payload);
-        const h = this.streams.streams.get(id);
-        if (h) this.maybeDimSoon(h);
+    this.streams = new StreamManager(
+      o.config.captureBin,
+      {
+        onState: (h, reason) => this.onStreamState(h, reason),
+        onFrame: (id, pts, flags, payload) => {
+          this.flowFor(id).onFrame(pts, flags, payload);
+          const h = this.streams.streams.get(id);
+          if (h) this.maybeDimSoon(h);
+        },
       },
-    });
+      o.config.helperMode ?? "shared",
+    );
     this.brightness =
       o.brightness ??
       (o.config.display.dim && realDimAllowed(process.env, o.config.captureBin)
@@ -271,7 +275,7 @@ export class XrHub {
     clearTimeout(this.dimCheckTimer);
     this.restoreBrightnessSync();
     this.flagOffSync();
-    this.streams.stop();
+    this.streams.shutdown();
     this.markerProc?.kill();
     for (const p of this.panels.values()) clearTimeout(p.timer);
     for (const c of this.conns) c.ws.terminate();
@@ -332,6 +336,7 @@ export class XrHub {
         dimEnabled: !!this.brightness,
       },
       mic: { listening: this.voice.size > 0 },
+      helperMode: this.streams.helperMode(),
       streams: [...this.streams.streams.values()].map((s) => ({
         streamId: s.streamId,
         title: s.title,
@@ -447,12 +452,15 @@ export class XrHub {
     signal?: AbortSignal,
     widthM?: number,
     heightM?: number,
+    /** stable id (stream panels): the same source always gets the same panel id (BUG-39391d) */
+    fixedId?: string,
   ): Promise<CommandResult> {
     if (!this.isConnected()) return Promise.resolve({ status: "not_connected" });
     const bad = webUrls(panel).find((u) => !isWebUrl(u));
     if (bad) return Promise.resolve({ status: "error", data: { error: `only http(s) URLs can be shown (got ${bad.slice(0, 40)})` } });
     panel = this.rewriteLocal(panel);
-    const id = randomUUID().slice(0, 8);
+    const id = fixedId ?? randomUUID().slice(0, 8);
+    if (fixedId && this.panels.has(fixedId)) this.removePanel(fixedId, true); // a leftover with the same id: replace it
     const msg = { type: "show" as const, id, role, awaitingResponse: wait, panel };
     // Panels are not replaced automatically; autoTidy() keeps the room readable (max 6 expanded).
     const now = Date.now();
@@ -722,7 +730,10 @@ export class XrHub {
         this.displaySuppressed = false;
         this.displayApproved = true;
       }
-      // A restart replaces the old stream and its panel (never two streams of the same source).
+      // A restart replaces the old stream and its panel (never two streams of the same source). The panel keeps
+      // its id (see streamPanelId) and, if the user had moved it, its place in the room.
+      const prev = existing?.panelId ? this.panels.get(existing.panelId) : this.panels.get(streamPanelId(key));
+      const prevPlace = prev?.movedByUser && prev.placement?.position ? prev.placement : undefined;
       if (existing) this.streams.stop(existing.streamId);
       const role: Role = cmd.role ?? (cmd.source === "display" ? "overlay" : "side");
       const widthM = cmd.widthM ?? (cmd.source === "display" ? 0.6 : 0.9);
@@ -753,13 +764,18 @@ export class XrHub {
         this.updateHud();
         return { status: "error", data: { error: ready.error, code: h.errorCode, subject: approvalSubject } };
       }
-      const shown = await this.show(role, { kind: "stream", title, streamId: h.streamId, source: cmd.source, app, width: 0, height: 0 }, false, 0);
+      const shown = await this.show(role, { kind: "stream", title, streamId: h.streamId, source: cmd.source, app, width: 0, height: 0 }, false, 0, undefined, undefined, undefined, streamPanelId(key));
       const p = shown.panelId ? this.panels.get(shown.panelId) : undefined;
       if (p) {
         p.streamId = h.streamId;
         h.panelId = p.msg.id;
         p.size = { widthM, heightM: widthM * 0.625 };
         this.send({ type: "update", id: p.msg.id, widthM, heightM: widthM * 0.625 });
+        if (prevPlace && role !== "overlay") {
+          p.placement = prevPlace;
+          p.movedByUser = true;
+          this.send({ type: "update", id: p.msg.id, placement: prevPlace });
+        }
         // The panel appears after the stream is live: tell it the current state/size right away.
         this.send({ type: "stream_state", streamId: h.streamId, state: h.state, width: h.width, height: h.height });
         this.flowFor(h.streamId).resync();
@@ -1515,6 +1531,17 @@ export class XrHub {
     }
     json(404, { error: "not found" });
   }
+}
+
+/**
+ * Stable panel id for a stream (BUG-39391d): "display" for the Mac screen ("display-<id>" for another display) and
+ * "win-<window id>" for a window. The id survives restarts of the stream, so tools, buttons and voice commands can
+ * always point at the Mac screen with id "display". (The stream id still changes per start: it names one encoder run.)
+ */
+export function streamPanelId(key: string): string {
+  if (key === "display:main") return "display";
+  const [kind, n] = key.split(":");
+  return kind === "display" ? `display-${n}` : `win-${n}`;
 }
 
 /** xr_panel update body: interpreted according to the panel kind. */

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "claudexr": {
+      "type": "http",
+      "url": "http://127.0.0.1:47801/mcp",
+      "headers": {
+        "Authorization": "Bearer <TOKEN från ~/.claudexr/local-token>"
+      },
+      "timeout": 900000
+    }
+  }
+}

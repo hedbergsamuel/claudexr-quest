@@ -1,0 +1,7 @@
+diff --git a/bridge/test/zz-dbg.test.ts b/bridge/test/zz-dbg.test.ts
+deleted file mode 100644
+index 7c469a5..0000000
+--- a/bridge/test/zz-dbg.test.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-// (left over from debugging; intentionally empty, safe to delete)

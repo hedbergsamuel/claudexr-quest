@@ -1,0 +1,64 @@
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+index d1141f5..bb7991c 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+@@ -28,6 +28,10 @@ import androidx.compose.material3.OutlinedButton
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.setValue
+ import androidx.compose.runtime.mutableStateListOf
+ import androidx.compose.runtime.remember
+ import androidx.compose.ui.Alignment
+@@ -207,11 +211,22 @@ fun HtmlPanel(spec: HtmlSpec, onDismiss: () -> Unit, onRecenter: () -> Unit) {
+ 
+ @Composable
+ fun PermissionCard(spec: PermissionSpec, onDecision: (Boolean) -> Unit, onDismiss: () -> Unit) {
++  // Review 2 R2-05: "Godkänn" is armed only after the card has been visible for 1 s (a pinch meant for
++  // whatever was at this spot a moment ago must not approve) and after everything has been scrolled
++  // into view (the card shows the exact request; that only helps if it was all on screen once).
++  val scroll = rememberScrollState()
++  var armed by remember(spec) { mutableStateOf(false) }
++  var seenAll by remember(spec) { mutableStateOf(false) }
++  LaunchedEffect(spec) {
++    kotlinx.coroutines.delay(ARM_DELAY_MS)
++    armed = true
++  }
++  if (!seenAll && scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue - 4) seenAll = true
+   PanelFrame(spec.title, onDismiss, null) {
+     Text(spec.tool, color = Muted, fontSize = SmallSize)
+     spec.warnings.forEach { w -> Text("⚠ $w", color = Color(0xFFFF6B5E), fontSize = 20.sp, fontWeight = FontWeight.SemiBold) }
+     Spacer(Modifier.height(6.dp))
+-    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
++    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll)) {
+       Text(spec.subject, color = Fg, fontSize = 22.sp, fontFamily = FontFamily.Monospace)
+       spec.detail?.let {
+         Spacer(Modifier.height(8.dp))
+@@ -233,8 +248,13 @@ fun PermissionCard(spec: PermissionSpec, onDecision: (Boolean) -> Unit, onDismis
+     }
+     Spacer(Modifier.height(10.dp))
+     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+-      Button(onClick = { onDecision(true) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A8F5C))) {
+-        Text("Godkänn", fontSize = BodySize)
++      Button(
++          onClick = { if (armed && seenAll) onDecision(true) },
++          enabled = armed && seenAll,
++          modifier = Modifier.weight(1f),
++          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A8F5C)),
++      ) {
++        Text(if (!seenAll) "Läs allt ↓" else "Godkänn", fontSize = BodySize)
+       }
+       Button(onClick = { onDecision(false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB54848))) {
+         Text("Neka", fontSize = BodySize)
+@@ -244,6 +264,8 @@ fun PermissionCard(spec: PermissionSpec, onDecision: (Boolean) -> Unit, onDismis
+   }
+ }
+ 
++private const val ARM_DELAY_MS = 1_000L
++
+ @Composable
+ fun StreamBadge(spec: StreamSpec, state: String, onStop: () -> Unit) {
+   val live = state == "live"

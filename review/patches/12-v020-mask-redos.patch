@@ -1,0 +1,43 @@
+diff --git a/bridge/src/mask.ts b/bridge/src/mask.ts
+index af886e6..c214855 100644
+--- a/bridge/src/mask.ts
++++ b/bridge/src/mask.ts
+@@ -4,8 +4,8 @@
+ const PATTERNS: [RegExp, string][] = [
+   // Authorization headers (before the generic key=value rule)
+   [/\b(Authorization\s*[:=]\s*)(Bearer\s+|Basic\s+|token\s+)?[^\s'"]+/gi, "$1$2***"],
+-  // key=value / key: value for secret-looking names
+-  [/\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|AUTH)[A-Za-z0-9_]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi, "$1$2***"],
++  // key=value / key: value for secret-looking names (bounded {0,48}: "*" was O(n^2) on long identifiers)
++  [/\b([A-Za-z0-9_]{0,48}(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|AUTH)[A-Za-z0-9_]{0,48})(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi, "$1$2***"],
+   // Authorization headers
+   [/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 ***"],
+   // Well-known token formats
+@@ -17,7 +17,9 @@ const PATTERNS: [RegExp, string][] = [
+   [/\bAIza[0-9A-Za-z_-]{30,}/g, "AIza***"],
+   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "eyJ***(jwt)"],
+   // URLs with credentials
+-  [/(\w+:\/\/)[^\s/:@]+:[^\s/@]+@/g, "$1***:***@"],
++  // Anchored + bounded scheme: the unanchored (\w+:\/\/) was O(n^2) on long word runs (100 kB of hex
++  // = 4 s of blocked event loop, which also stalls the WebSocket, xr_ask and hook requests).
++  [/\b([A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/)[^\s/:@]+:[^\s/@]+@/g, "$1***:***@"],
+   // PEM blocks
+   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "-----PRIVATE KEY (masked)-----"],
+ ];
+diff --git a/bridge/test/mask.test.ts b/bridge/test/mask.test.ts
+index 9fc4892..818a3bd 100644
+--- a/bridge/test/mask.test.ts
++++ b/bridge/test/mask.test.ts
+@@ -19,3 +19,12 @@ test("masks common secrets and leaves normal commands alone", () => {
+     else assert.match(out, want, input);
+   }
+ });
++
++test("masking is linear-time on long word runs (no ReDoS)", () => {
++  for (const s of ["a".repeat(100_000), "0123456789abcdef".repeat(6_250), "TOKEN".repeat(20_000)]) {
++    const t = performance.now();
++    maskSecrets(s);
++    const ms = performance.now() - t;
++    assert.ok(ms < 250, `${ms.toFixed(0)} ms for ${s.length} chars`);
++  }
++});

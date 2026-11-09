@@ -1,0 +1,27 @@
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+index 1e01a79..acbf832 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.size
+ import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.itemsIndexed
+ import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.foundation.verticalScroll
+@@ -216,8 +218,11 @@ fun TestCard(spec: TestSpec, onVerdict: (Boolean, List<Boolean>) -> Unit, onDism
+ fun TextPanel(spec: TextSpec, onDismiss: () -> Unit, onRecenter: () -> Unit) {
+   PanelFrame(spec.title, onDismiss, onRecenter) {
+     val mono = spec.format != "markdown" && spec.format != "text"
+-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+-      spec.content.lines().forEach { line ->
++    // Lazy: only the ~30 visible lines are composed. The old Column composed every line of up to
++    // 100 kB of text on the main (render) thread when the panel opened.
++    val lines = remember(spec.content) { spec.content.lines() }
++    LazyColumn(Modifier.fillMaxSize()) {
++      itemsIndexed(lines) { _, line ->
+         val color =
+             when {
+               spec.format != "diff" -> Fg

@@ -1,0 +1,136 @@
+diff --git a/bridge/src/hub.ts b/bridge/src/hub.ts
+index d1ad0d7..dc4f1b7 100644
+--- a/bridge/src/hub.ts
++++ b/bridge/src/hub.ts
+@@ -214,9 +214,14 @@ export class XrHub {
+         conn.app = msg.app;
+         this.headset = conn;
+         log(`headset connected: ${msg.device ?? "unknown"} from ${conn.remoteAddress}`);
+-        conn.ws.send(
+-          JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION, server: "claudexr-bridge", host: os.hostname() }),
+-        );
++        const welcome: BridgeToHeadset = {
++          type: "welcome",
++          protocol: PROTOCOL_VERSION,
++          server: "claudexr-bridge",
++          host: os.hostname(),
++          open: [...this.panels.keys()],
++        };
++        conn.ws.send(JSON.stringify(welcome));
+         // Restore state after a reconnect.
+         for (const p of this.panels.values()) this.send(p.msg);
+         return;
+diff --git a/bridge/src/protocol.ts b/bridge/src/protocol.ts
+index da15545..16bc296 100644
+--- a/bridge/src/protocol.ts
++++ b/bridge/src/protocol.ts
+@@ -41,6 +41,9 @@ export interface WelcomeMsg {
+   protocol: number;
+   server: string;
+   host: string;
++  /** Ids of all panels the bridge still considers open; they are re-sent right after this message.
++   *  The headset keeps those it already shows (no WebView reload) and drops the rest. */
++  open: string[];
+ }
+ export interface ShowMsg {
+   type: "show";
+diff --git a/bridge/test/tools.test.ts b/bridge/test/tools.test.ts
+index 42d6cf3..e5f9798 100644
+--- a/bridge/test/tools.test.ts
++++ b/bridge/test/tools.test.ts
+@@ -190,3 +190,27 @@ test("hub takeover: when the hub exits, the remaining bridge takes over the port
+     await second.close();
+   }
+ });
++
++test("welcome lists the panels that are still open (headset keeps them instead of reloading)", async () => {
++  const port = nextPort();
++  const b = await startBridge(port);
++  const first = await startSim(port);
++  try {
++    const r = await b.call("xr_preview", { url: "https://example.com/" });
++    first.close();
++    await new Promise((res) => setTimeout(res, 200));
++    const { WebSocket } = await import("ws");
++    const ws = new WebSocket(`ws://127.0.0.1:${port}/headset`);
++    const welcome = await new Promise<any>((resolve) => {
++      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: 1 })));
++      ws.on("message", (raw) => {
++        const m = JSON.parse(raw.toString());
++        if (m.type === "welcome") resolve(m);
++      });
++    });
++    assert.deepEqual(welcome.open, [r.json.panelId]);
++    ws.close();
++  } finally {
++    await b.close();
++  }
++});
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt b/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
+index a0b0ffc..f5cc156 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
+@@ -129,8 +129,9 @@ class MainActivity : AppSystemActivity() {
+ 
+   private fun onBridgeMessage(msg: BridgeMessage) {
+     when (msg) {
+-      // A (re)connect: the bridge re-sends whatever is still open, so start from a clean slate.
+-      is Welcome -> panels.clearAll()
++      // A (re)connect: keep panels the bridge still has open (their WebViews keep their state and are not
++      // reloaded; the re-sent "show" for them is ignored), drop the rest. Older bridges: clean slate.
++      is Welcome -> msg.open?.let { panels.retainOnly(it) } ?: panels.clearAll()
+       is Show -> panels.show(msg)
+       is Clear -> panels.clear(msg)
+     }
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+index 1be075f..fe4bcb9 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+@@ -77,6 +77,8 @@ class PanelManager(
+ 
+   fun clearAll() = open.keys.toList().forEach { remove(it) }
+ 
++  fun retainOnly(ids: Set<String>) = open.keys.filter { it !in ids }.forEach { remove(it) }
++
+   /** Put every open panel back in its role slot (after Recenter). */
+   fun relayout() {
+     val perRole = HashMap<Role, Int>()
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/Protocol.kt b/quest-app/app/src/main/java/com/claudexr/quest/Protocol.kt
+index 6d77049..f97eb8a 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/Protocol.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/Protocol.kt
+@@ -48,7 +48,8 @@ data class TextSpec(val title: String, val content: String, val format: String)
+ 
+ sealed interface BridgeMessage
+ 
+-data class Welcome(val host: String) : BridgeMessage
++/** [open] = panel ids the bridge still has open (null from older bridges = unknown). */
++data class Welcome(val host: String, val open: Set<String>? = null) : BridgeMessage
+ 
+ data class Show(val id: String, val role: Role, val awaitingResponse: Boolean, val panel: PanelSpec) :
+     BridgeMessage
+@@ -61,7 +62,8 @@ object Protocol {
+       try {
+         val o = JSONObject(text)
+         when (o.optString("type")) {
+-          "welcome" -> Welcome(o.optString("host", "Mac"))
++          "welcome" ->
++              Welcome(o.optString("host", "Mac"), o.optJSONArray("open")?.strings()?.toSet())
+           "clear" ->
+               Clear(
+                   o.optStringOrNull("id"),
+diff --git a/quest-app/app/src/test/java/com/claudexr/quest/ProtocolTest.kt b/quest-app/app/src/test/java/com/claudexr/quest/ProtocolTest.kt
+index 1b12f8a..c785ebe 100644
+--- a/quest-app/app/src/test/java/com/claudexr/quest/ProtocolTest.kt
++++ b/quest-app/app/src/test/java/com/claudexr/quest/ProtocolTest.kt
+@@ -30,6 +30,10 @@ class ProtocolTest {
+     assertEquals(Clear(null, null), Protocol.parse("""{"type":"clear"}"""))
+     assertEquals(Welcome("mac"), Protocol.parse("""{"type":"welcome","protocol":1,"server":"claudexr-bridge","host":"mac"}"""))
+     assertNull(Protocol.parse("not json"))
++    assertEquals(
++        Welcome("mac", setOf("a1", "b2")),
++        Protocol.parse("""{"type":"welcome","protocol":1,"server":"claudexr-bridge","host":"mac","open":["a1","b2"]}"""),
++    )
+   }
+ 
+   @Test

@@ -1,0 +1,119 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 2 -X POST http://127.0.0.1:47801/hook/context -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 2 -X POST http://127.0.0.1:47801/hook/context -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 149 -X POST http://127.0.0.1:47801/hook/permission -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 150
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/.claudexr/on\" ] || exit 0; curl -sf -m 1 -X POST http://127.0.0.1:47801/hook/activity -H \"Authorization: Bearer $(cat \"$HOME/.claudexr/local-token\" 2>/dev/null)\" -H \"Content-Type: application/json\" --data-binary @- || exit 0",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

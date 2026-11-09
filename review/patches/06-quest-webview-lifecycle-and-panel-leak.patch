@@ -1,0 +1,89 @@
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+index 1be075f..2aef585 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+@@ -27,7 +27,7 @@ class PanelManager(
+     private val onRecenter: () -> Unit,
+     private val send: (String) -> Boolean,
+ ) {
+-  private data class Open(val id: String, val role: Role, val panel: PanelSpec, val entity: Entity)
++  private data class Open(val id: String, val role: Role, val panel: PanelSpec, val entity: Entity, val regId: Int)
+ 
+   private val open = LinkedHashMap<String, Open>()
+   private var nextRegistrationId = 0x7f_c0_00_00 // far away from R.id values
+@@ -63,7 +63,7 @@ class PanelManager(
+             Transform(layout.poseFor(msg.role, index)),
+             Grabbable(true, GrabbableType.FACE), // user can grab and move panels
+         )
+-    open[id] = Open(id, msg.role, msg.panel, entity)
++    open[id] = Open(id, msg.role, msg.panel, entity, regId)
+     count.intValue = open.size
+   }
+ 
+@@ -87,7 +87,11 @@ class PanelManager(
+   }
+ 
+   private fun remove(id: String) {
+-    open.remove(id)?.entity?.destroy()
++    val o = open.remove(id) ?: return
++    o.entity.destroy()
++    // registerPanel() has no public counterpart; without this every panel ever shown (and its content,
++    // up to 100 kB of text) stays referenced from the activity's registration map for the app's lifetime.
++    activity.panelRegistrations.remove(o.regId)
+     count.intValue = open.size
+   }
+ 
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+index 1e01a79..7471ea9 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/ui/Panels.kt
+@@ -1,6 +1,9 @@
+ package com.claudexr.quest.ui
+ 
+ import android.annotation.SuppressLint
++import android.net.Uri
++import android.webkit.WebResourceRequest
++import android.webkit.WebSettings
+ import android.webkit.WebView
+ import android.webkit.WebViewClient
+ import androidx.compose.foundation.background
+@@ -117,6 +120,10 @@ fun AskCard(spec: AskSpec, onChoose: (Int) -> Unit, onDismiss: () -> Unit, onRec
+   }
+ }
+ 
++/** Only plain web pages may be shown; blocks file:, content:, intent:, javascript: and data: URLs. */
++internal fun isAllowedWebUrl(url: String): Boolean =
++    runCatching { Uri.parse(url).scheme?.lowercase() in setOf("http", "https") }.getOrDefault(false)
++
+ @SuppressLint("SetJavaScriptEnabled")
+ @Composable
+ fun WebPane(url: String, modifier: Modifier = Modifier) {
+@@ -126,10 +133,26 @@ fun WebPane(url: String, modifier: Modifier = Modifier) {
+         WebView(ctx).apply {
+           settings.javaScriptEnabled = true
+           settings.domStorageEnabled = true
+-          webViewClient = WebViewClient() // keep navigation inside the panel
+-          loadUrl(url)
++          settings.allowFileAccess = false
++          settings.allowContentAccess = false
++          settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
++          settings.setSupportMultipleWindows(false)
++          webViewClient =
++              object : WebViewClient() {
++                // keep navigation inside the panel, but only to http(s)
++                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
++                    !isAllowedWebUrl(request.url.toString())
++              }
++          if (isAllowedWebUrl(url)) loadUrl(url) else loadData("Blocked URL scheme", "text/plain", "utf-8")
+         }
+       },
++      // Without this the WebView (its renderer, JS timers, audio, GPU surface) outlives the panel.
++      onRelease = { wv ->
++        wv.stopLoading()
++        wv.loadUrl("about:blank")
++        wv.removeAllViews()
++        wv.destroy()
++      },
+   )
+ }
+ 

@@ -1,0 +1,127 @@
+diff --git a/bridge/src/hookapi.ts b/bridge/src/hookapi.ts
+index 5d0457f..55c6e7a 100644
+--- a/bridge/src/hookapi.ts
++++ b/bridge/src/hookapi.ts
+@@ -40,23 +40,27 @@ export const MAX_DIFF_LINES = 600;
+ export const MAX_DIFF_CHARS = 60_000;
+ 
+ // Characters that can make displayed text differ from what runs (bidi overrides, zero-width, controls).
+-const DECEPTIVE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F​-‏‪-‮⁠-⁤⁦-⁩﻿]/;
++const DECEPTIVE =
++  /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;
+ 
+ const RISKS: [RegExp, string][] = [
+   [/\|\s*(curl|wget|nc|ncat|netcat|socat|ssh|scp|telnet)\b/, "Skickar data till nätverket (pipe till curl/nc/ssh)"],
+-  [/\b(curl|wget)\b[^\n]*\s(-d|--data[\w-]*|-F|--form|-T|--upload-file)\b/, "Laddar upp data med curl/wget"],
+-  [/\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/, "Kör ett skript direkt från internet"],
++  // Bounded {0,400} (review 2 R2-02): "[^\n]*" after a repeated word is O(n^2); 200 kB took 6.5 s.
++  [/\b(curl|wget)\b[^\n]{0,400}?\s(-d|--data[\w-]*|-F|--form|-T|--upload-file)\b/, "Laddar upp data med curl/wget"],
++  [/\b(curl|wget)\b[^\n|]{0,400}\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/, "Kör ett skript direkt från internet"],
+   [/(~|\$HOME|\/Users\/[^/\s]+)\/\.ssh\b|\bid_(rsa|ed25519|ecdsa|dsa)\b/, "Rör SSH-nycklar"],
+   [/\bsecurity\s+(find|dump|export|add)-|\bkeychain\b|\.keychain(-db)?\b/i, "Rör macOS nyckelring"],
+   [/\b(printenv|env)\b\s*($|[|>;&])|\$\{?[A-Z0-9_]*(TOKEN|SECRET|KEY|PASSWORD|PASSWD)[A-Z0-9_]*\}?/, "Läser miljövariabler/hemligheter"],
+   [/\.(aws|gnupg|docker|kube)\b|\.netrc\b|\.npmrc\b|\.pypirc\b|\.env\b/, "Rör filer med inloggningsuppgifter"],
+   [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)+(\/|~|\$HOME)(\s|\/?\*?\s*$|$)/, "Raderar rekursivt i hemkatalog eller rot"],
+   [/\bsudo\b/, "Kör med administratörsrättigheter (sudo)"],
+-  [/\b(base64|xxd|openssl\s+enc)\b[^\n]*\|/, "Kodar data i en pipe (möjlig exfiltrering)"],
++  [/\b(base64|xxd|openssl\s+enc)\b[^\n|]{0,400}\|/, "Kodar data i en pipe (möjlig exfiltrering)"],
+   [/\.(zshrc|bashrc|bash_profile|zprofile|profile)\b|LaunchAgents|LaunchDaemons|\bcrontab\b/, "Ändrar autostart eller skalets konfiguration"],
+-  [/\beval\b|`[^`]+`|\$\([^)]*\)/, "Innehåller kommandosubstitution eller eval: läs hela raden"],
++  [/\beval\b|`[^`\n]{1,400}`|\$\(/, "Innehåller kommandosubstitution eller eval: läs hela raden"],
+   [/\bchmod\s+(-R\s+)?777\b|\bchown\s+-R\b/, "Ändrar rättigheter brett"],
+-  [/\bgit\s+push\b[^\n]*(--force|-f)\b/, "Tvingad git push"],
++  [/\bgit\s+push\b[^\n]{0,400}?\s(--force|-f)\b/, "Tvingad git push"],
++  [/\bdangerouslyDisableSandbox\b|"sandbox"\s*:\s*false/, "Kör utanför sandlådan"],
++  [/[\u0370-\u03FF\u0400-\u04FF]/, "Innehåller grekiska/kyrilliska tecken: kontrollera förväxlingsbara tecken (t.ex. kyrilliskt а i en adress)"],
+ ];
+ 
+ export function riskWarnings(text: string): string[] {
+@@ -115,9 +119,36 @@ export function buildPermissionPanel(input: Record<string, unknown>): ApprovalPa
+     subject = tool;
+     detail = JSON.stringify(ti, null, 1);
+   }
++  // Review 2 R2-02: every input field that is not rendered above is shown too (e.g. replace_all,
++  // run_in_background, timeout, sandbox flags): what is approved must be all of what runs.
++  const rendered: Record<string, string[]> = {
++    Bash: ["command", "description"],
++    PowerShell: ["command", "description"],
++    Edit: ["file_path", "old_string", "new_string"],
++    MultiEdit: ["file_path", "edits"],
++    Write: ["file_path", "content"],
++    WebFetch: ["url", "prompt"],
++  };
++  const shownKeys = rendered[tool];
++  const extraWarnings: string[] = [];
++  if (shownKeys) {
++    const extra = Object.fromEntries(Object.entries(ti).filter(([k]) => !shownKeys.includes(k)));
++    if (Object.keys(extra).length) detail = `${detail ? detail + "\n" : ""}Övriga parametrar: ${JSON.stringify(extra)}`;
++    const edits = (tool === "MultiEdit" && Array.isArray(ti.edits) ? ti.edits : [ti]) as Record<string, unknown>[];
++    if ((tool === "Edit" || tool === "MultiEdit") && edits.some((e) => e && e.replace_all === true)) extraWarnings.push("Ersätter ALLA förekomster i filen (replace_all)");
++    if (tool === "MultiEdit") {
++      const odd = edits.flatMap((e) => Object.keys(e ?? {}).filter((k) => !["old_string", "new_string", "replace_all"].includes(k)));
++      if (odd.length) detail = `${detail ? detail + "\n" : ""}Okända fält i edits: ${JSON.stringify([...new Set(odd)])}`;
++    }
++  }
+   const all = [subject, detail ?? "", diff ?? ""].join("\n");
+-  const warnings = riskWarnings(all);
+-  if (tool === "Write" || tool === "Edit" || tool === "MultiEdit") {
++  // Size limits first: never run the risk patterns on huge input (they block the daemon's event loop).
++  const tooBig =
++    subject.length > MAX_SUBJECT_CHARS ||
++    (detail?.length ?? 0) > MAX_SUBJECT_CHARS ||
++    (diff !== undefined && (diff.length > MAX_DIFF_CHARS || diff.split("\n").length > MAX_DIFF_LINES));
++  const warnings = tooBig ? [] : [...extraWarnings, ...riskWarnings(all)];
++  if (!tooBig && (tool === "Write" || tool === "Edit" || tool === "MultiEdit")) {
+     for (const w of riskWarnings(` ${subject}`)) if (!warnings.includes(w)) warnings.push(w);
+   }
+   const panel = {
+@@ -129,7 +160,8 @@ export function buildPermissionPanel(input: Record<string, unknown>): ApprovalPa
+     diff,
+     warnings,
+   };
+-  if (DECEPTIVE.test(all)) return { panel, approvable: false, reason: "contains invisible/bidi control characters" };
++  // CRLF line endings are fine inside file content (diff); a bare/trailing CR in a command is not.
++  if (DECEPTIVE.test(subject) || DECEPTIVE.test(detail ?? "") || DECEPTIVE.test((diff ?? "").replace(/\r\n/g, "\n"))) return { panel, approvable: false, reason: "contains invisible/bidi control characters" };
+   if (subject.length > MAX_SUBJECT_CHARS || (detail?.length ?? 0) > MAX_SUBJECT_CHARS) return { panel, approvable: false, reason: "too long to show in full" };
+   if (diff && (diff.length > MAX_DIFF_CHARS || diff.split("\n").length > MAX_DIFF_LINES)) return { panel, approvable: false, reason: "change too large to show in full" };
+   return { panel, approvable: true };
+diff --git a/bridge/test/approval-r2-02.test.ts b/bridge/test/approval-r2-02.test.ts
+new file mode 100644
+index 0000000..6a914ad
+--- /dev/null
++++ b/bridge/test/approval-r2-02.test.ts
+@@ -0,0 +1,34 @@
++// Review 2 / R2-02: approval panels show every parameter, risk analysis is linear-time, more invisible characters.
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { buildPermissionPanel } from "../src/hookapi.js";
++
++test("risk analysis stays fast on hostile input (no event-loop stall)", () => {
++  for (const content of ["curl ".repeat(40_000), "$(".repeat(100_000), "git push ".repeat(30_000), "base64 ".repeat(30_000)]) {
++    const t = performance.now();
++    buildPermissionPanel({ tool_name: "Write", tool_input: { file_path: "/tmp/x", content } });
++    buildPermissionPanel({ tool_name: "Bash", tool_input: { command: content.slice(0, 19_000) } });
++    const ms = performance.now() - t;
++    assert.ok(ms < 300, `${ms.toFixed(0)} ms for ${content.length} chars`);
++  }
++});
++
++test("parameters that are not rendered are shown; replace_all warns", () => {
++  const b = buildPermissionPanel({ tool_name: "Bash", tool_input: { command: "npm test", run_in_background: true, dangerouslyDisableSandbox: true } });
++  assert.match(b.panel.detail ?? "", /Övriga parametrar: .*dangerouslyDisableSandbox/);
++  assert.ok(b.panel.warnings.some((w) => /sandlådan/.test(w)));
++  const e = buildPermissionPanel({ tool_name: "Edit", tool_input: { file_path: "/a.ts", old_string: "x", new_string: "y", replace_all: true } });
++  assert.ok(e.panel.warnings.some((w) => /replace_all/.test(w)));
++  assert.match(e.panel.detail ?? "", /replace_all/);
++});
++
++test("more invisible characters block XR approval; CRLF and Swedish text do not", () => {
++  for (const ch of ["\u{E0041}", "­", " ", "️", "ㅤ", "\r"]) {
++    assert.equal(buildPermissionPanel({ tool_name: "Bash", tool_input: { command: `echo ok${ch}` } }).approvable, false, JSON.stringify(ch));
++  }
++  assert.equal(buildPermissionPanel({ tool_name: "Write", tool_input: { file_path: "/a.txt", content: "rad 1\r\nrad 2\r\n" } }).approvable, true);
++  const sv = buildPermissionPanel({ tool_name: "Bash", tool_input: { command: 'git commit -m "Åtgärda växling"' } });
++  assert.equal(sv.approvable, true);
++  assert.equal(sv.panel.warnings.length, 0);
++  assert.ok(buildPermissionPanel({ tool_name: "WebFetch", tool_input: { url: "https://аpple.com" } }).panel.warnings.some((w) => /kyrilliska/.test(w)));
++});

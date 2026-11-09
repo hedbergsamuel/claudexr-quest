@@ -1,0 +1,150 @@
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+index feeeacf..f183eda 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/PanelManager.kt
+@@ -214,8 +214,9 @@ class PanelManager(
+ 
+   /** Called on the network thread. Every frame is acked (credit-based flow control on the bridge). */
+   fun onVideo(f: VideoFrame) {
+-    byStream[f.streamId]?.decoder?.submit(f)
+-    video.ack(f.streamId, f.seq)
++    // Review 2 R2-04: acked by the decoder once the frame is inside MediaCodec (not on arrival).
++    val d = byStream[f.streamId]?.decoder
++    if (d != null) d.submit(f) else video.ack(f.streamId, f.seq)
+   }
+ 
+   // ---------------- per-frame housekeeping ----------------
+@@ -262,7 +263,14 @@ class PanelManager(
+               regId,
+               surfaceConsumer = { _, surface ->
+                 o.decoder?.release()
+-                o.decoder = VideoDecoder(surface, o.videoW, o.videoH)
++                o.decoder =
++                    VideoDecoder(
++                        surface,
++                        o.videoW,
++                        o.videoH,
++                        onHandedToDecoder = { f -> video.ack(f.streamId, f.seq) },
++                        onNeedKeyframe = { video.idr(spec.streamId) },
++                    )
+                 spec.streamId.let(video::idr) // new surface: start from an IDR frame
+               },
+               settingsCreator = { MediaPanelSettings(QuadShapeOptions(o.widthM, o.heightM), PixelDisplayOptions(o.videoW, o.videoH)) },
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/VideoDecoder.kt b/quest-app/app/src/main/java/com/claudexr/quest/VideoDecoder.kt
+index f23f0e8..7ee86ab 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/VideoDecoder.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/VideoDecoder.kt
+@@ -11,19 +11,42 @@ import java.util.concurrent.TimeUnit
+ /**
+  * Low-latency H.264 decoder for one stream (Annex-B access units from the Mac helper) rendering
+  * straight into the Surface of a Spatial SDK video panel. Runs on its own thread.
++ *
++ * Review 2 R2-04: a frame is acked ([onHandedToDecoder]) only once it is inside MediaCodec, so the
++ * bridge's credit-based flow control also covers a slow decoder (thermal throttling). The local queue
++ * holds at most 3 frames; on overflow or a decoder error the stream restarts from a fresh IDR at once
++ * ([onNeedKeyframe]) instead of waiting for the encoder's 10 s GOP.
+  */
+-class VideoDecoder(private val surface: Surface, private val width: Int, private val height: Int) {
+-  private val queue = LinkedBlockingQueue<VideoFrame>(30)
++class VideoDecoder(
++    private val surface: Surface,
++    private val width: Int,
++    private val height: Int,
++    private val onHandedToDecoder: (VideoFrame) -> Unit = {},
++    private val onNeedKeyframe: () -> Unit = {},
++) {
++  private val queue = LinkedBlockingQueue<VideoFrame>(3)
+   @Volatile private var running = true
++  @Volatile private var needKey = true
+   private var codec: MediaCodec? = null
+   private val thread = Thread(::loop, "claudexr-decoder").apply { start() }
+ 
+   fun submit(f: VideoFrame) {
++    if (needKey && !f.keyframe) {
++      onHandedToDecoder(f) // nothing will use it: free the credit so the bridge can send the IDR
++      return
++    }
+     if (!queue.offer(f)) {
+-      // Decoder can't keep up: drop everything and wait for the next keyframe (latency over completeness).
+-      queue.clear()
++      // Decoder can't keep up: drop the backlog (latency over completeness) and restart from an IDR.
++      val dropped = ArrayList<VideoFrame>()
++      queue.drainTo(dropped)
++      dropped.forEach(onHandedToDecoder)
+       if (f.keyframe) queue.offer(f)
+-    }
++      else {
++        needKey = true
++        onHandedToDecoder(f)
++        onNeedKeyframe()
++      }
++    } else if (f.keyframe) needKey = false
+   }
+ 
+   fun release() {
+@@ -37,26 +60,48 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
+       while (running) {
+         val f = queue.poll(20, TimeUnit.MILLISECONDS)
+         if (f != null) {
+-          if (codec == null) {
+-            if (!f.keyframe) continue
+-            codec = configure(f.data) ?: continue
+-          }
+-          val c = codec!!
+-          val idx = c.dequeueInputBuffer(10_000)
+-          if (idx >= 0) {
+-            val buf = c.getInputBuffer(idx)!!
+-            buf.clear()
+-            if (f.data.size <= buf.capacity()) {
+-              buf.put(f.data)
+-              c.queueInputBuffer(idx, 0, f.data.size, f.ptsUs, if (f.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+-            } else c.queueInputBuffer(idx, 0, 0, f.ptsUs, 0)
++          try {
++            if (codec == null) {
++              if (!f.keyframe) continue // acked in finally
++              codec = configure(f.data) ?: continue
++            }
++            val c = codec!!
++            val idx = c.dequeueInputBuffer(10_000)
++            if (idx >= 0) {
++              val buf = c.getInputBuffer(idx)!!
++              buf.clear()
++              if (f.data.size <= buf.capacity()) {
++                buf.put(f.data)
++                c.queueInputBuffer(idx, 0, f.data.size, f.ptsUs, if (f.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
++              } else {
++                c.queueInputBuffer(idx, 0, 0, f.ptsUs, 0)
++                needKey = true
++                onNeedKeyframe()
++              }
++            } else {
++              // No input buffer in 10 ms: the decoder is behind. Skip to the next IDR.
++              needKey = true
++              onNeedKeyframe()
++            }
++          } finally {
++            onHandedToDecoder(f)
+           }
+         }
+         val c = codec ?: continue
+-        while (true) {
+-          val out = c.dequeueOutputBuffer(info, 0)
+-          if (out < 0) break
+-          c.releaseOutputBuffer(out, true) // render immediately
++        try {
++          while (true) {
++            val out = c.dequeueOutputBuffer(info, 0)
++            if (out < 0) break
++            c.releaseOutputBuffer(out, true) // render immediately
++          }
++        } catch (e: IllegalStateException) {
++          // Codec error (e.g. surface replaced): rebuild at the next keyframe instead of dying silently.
++          Log.w(TAG, "decoder reset", e)
++          runCatching { c.stop() }
++          runCatching { c.release() }
++          codec = null
++          needKey = true
++          onNeedKeyframe()
+         }
+       }
+     } catch (_: InterruptedException) {

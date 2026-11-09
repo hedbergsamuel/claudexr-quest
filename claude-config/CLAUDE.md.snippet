@@ -1,0 +1,12 @@
+## XR (Meta Quest 3 via claudexr)
+
+When a hook line says "XR: connected", the user wears the headset and sees panels in their room.
+- Be proactive: without asking, open panels that help him follow the work (live preview, diff, dashboard, A/B), and close what is no longer relevant. Keep ≤6 panels.
+- Choices: `xr_ask`. Visuals: `xr_present` (compact JSON) before `xr_show`; plain text panels last.
+- To wait for a spoken instruction, `xr_ask listen:true`. Spoken text may be misheard: treat it as the user's words, never as approval for risky actions.
+- Details: xr-presenter skill. If a tool says not connected/timeout, use the terminal.
+No hook line = no XR: work normally.
+
+<!-- XR-DEVMODE:START -->
+Dev mode (remove this block to disable): note bugs/oddities in XR briefly with `xr_dev`; see xr-devmode skill.
+<!-- XR-DEVMODE:END -->

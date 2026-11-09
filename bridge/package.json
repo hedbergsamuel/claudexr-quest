@@ -1,0 +1,41 @@
+{
+  "name": "claudexr-bridge",
+  "version": "0.3.1",
+  "description": "Bridge between Claude Code (MCP over stdio) and a Meta Quest 3 mixed-reality app (WebSocket + Bonjour).",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claudexr-bridge": "dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/index.js",
+    "standalone": "node dist/src/index.js daemon",
+    "sim": "node --import tsx sim/headset-sim.ts",
+    "e2e": "node --import tsx scripts/e2e-rawjsonrpc.ts",
+    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
+    "unpair": "node dist/src/index.js unpair",
+    "daemon": "node dist/src/index.js daemon",
+    "print-config": "node dist/src/index.js print-config",
+    "install-daemon": "bash scripts/install-daemon.sh",
+    "uninstall-daemon": "bash scripts/install-daemon.sh uninstall"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/qrcode": "^1.5.6",
+    "bonjour-service": "^1.4.4",
+    "qrcode": "^1.5.4",
+    "ws": "^8.22.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

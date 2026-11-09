@@ -1,0 +1,10 @@
+**/node_modules/
+**/build/
+**/dist/
+**/.gradle/
+**/.build/
+**/.swiftpm/
+*.apk
+.DS_Store
+.natt-state/
+quest-app/local.properties

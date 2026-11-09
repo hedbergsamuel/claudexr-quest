@@ -1,0 +1,175 @@
+diff --git a/bridge/src/hookctx.ts b/bridge/src/hookctx.ts
+new file mode 100644
+index 0000000..baa30be
+--- /dev/null
++++ b/bridge/src/hookctx.ts
+@@ -0,0 +1,47 @@
++// Serves Claude Code hooks directly from the long-lived bridge (POST /hook/context), so a hook costs one
++// loopback HTTP request (~1-2 ms) instead of starting Node (~30-60 ms) on every prompt.
++// It also only injects context when the XR state changed for that session, instead of ~150 tokens per prompt.
++import { XrStatus } from "./protocol.js";
++
++const FULL_GUIDE =
++  "The user is wearing the Meta Quest headset and sees panels in their room. " +
++  "In this state the user prefers: xr_ask for choices between 2-4 options (instead of asking in the terminal), " +
++  "xr_preview for showing a running web page, xr_compare for comparing two variants, " +
++  "xr_test for asking them to try something, xr_show for diffs/logs, and xr_clear to tidy up. " +
++  "If an xr_* tool reports not connected or timeout, the terminal is the fallback.";
++
++/** Peer-supplied strings (device name) go into Claude's context: keep them short and inert. */
++function inert(v: string | undefined, fallback: string): string {
++  const s = (v ?? "").replace(/[^\x20-\x7E -ɏ]/g, "").replace(/[()"`]/g, "").trim().slice(0, 40);
++  return s || fallback;
++}
++
++export function stateKey(s: XrStatus): string {
++  return s.connected ? `on:${s.device ?? ""}` : "off";
++}
++
++export function contextFor(s: XrStatus, full: boolean): string {
++  if (!s.connected) return "XR: not connected (bridge running, no Quest headset connected). Questions and previews go through the terminal as usual.";
++  const head = `XR: connected (${inert(s.device, "Quest headset")}, ${s.openPanels.length} panel(s) open).`;
++  return full ? `${head} ${FULL_GUIDE}` : head;
++}
++
++export class HookContext {
++  private last = new Map<string, string>();
++
++  /** Returns the hook JSON to send back, or null for "nothing new" (empty 200 body). */
++  handle(input: { session_id?: unknown; hook_event_name?: unknown; source?: unknown }, s: XrStatus): object | null {
++    const event = typeof input.hook_event_name === "string" ? input.hook_event_name : "UserPromptSubmit";
++    const session = typeof input.session_id === "string" ? input.session_id : "";
++    const key = stateKey(s);
++    const prev = this.last.get(session);
++    const isStart = event === "SessionStart";
++    if (!isStart && prev === key) return null;
++    this.last.delete(session);
++    this.last.set(session, key);
++    if (this.last.size > 256) this.last.delete(this.last.keys().next().value as string);
++    // Full guidance on session start/compaction and on the first "connected" of a session; one line otherwise.
++    const full = isStart || (s.connected && !(prev ?? "").startsWith("on:"));
++    return { hookSpecificOutput: { hookEventName: event, additionalContext: contextFor(s, full) } };
++  }
++}
+diff --git a/bridge/src/hub.ts b/bridge/src/hub.ts
+index d1ad0d7..ee48f5c 100644
+--- a/bridge/src/hub.ts
++++ b/bridge/src/hub.ts
+@@ -18,6 +18,7 @@ import {
+   BridgeToHeadset,
+ } from "./protocol.js";
+ import { lanAddresses } from "./net.js";
++import { HookContext } from "./hookctx.js";
+ import { log } from "./log.js";
+ 
+ interface OpenPanel {
+@@ -41,6 +42,7 @@ export class XrHub {
+   private headset: HeadsetConn | null = null;
+   private panels = new Map<string, OpenPanel>();
+   private heartbeat?: NodeJS.Timeout;
++  private hookCtx = new HookContext();
+   port = 0;
+ 
+   constructor(private readonly requestedPort: number, private readonly host = "0.0.0.0") {
+@@ -255,6 +257,26 @@ export class XrHub {
+     }
+     if (!local) return json(403, { error: "loopback only" });
+     if (path === "/status" && req.method === "GET") return json(200, this.status());
++    if (path === "/hook/context" && req.method === "POST") {
++      let body = "";
++      req.setEncoding("utf8");
++      req.on("data", (c: string) => {
++        if (body.length < 64 * 1024) body += c;
++      });
++      req.on("end", () => {
++        let input = {};
++        try {
++          input = JSON.parse(body);
++        } catch {}
++        const out = this.hookCtx.handle(input, this.status());
++        if (!out) {
++          res.writeHead(200, { "content-length": "0" });
++          return res.end();
++        }
++        json(200, out);
++      });
++      return;
++    }
+     if (path === "/command" && req.method === "POST") {
+       let body = "";
+       req.on("data", (c) => (body += c));
+diff --git a/bridge/test/hookctx.test.ts b/bridge/test/hookctx.test.ts
+new file mode 100644
+index 0000000..d9a9a6a
+--- /dev/null
++++ b/bridge/test/hookctx.test.ts
+@@ -0,0 +1,52 @@
++// Review finding P2: hook served by the bridge, state-change-only context, sanitised device names.
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { startBridge, startSim, nextPort } from "./helpers.js";
++
++async function hook(port: number, event: string, session = "s1") {
++  const r = await fetch(`http://127.0.0.1:${port}/hook/context`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ hook_event_name: event, session_id: session }),
++  });
++  const t = await r.text();
++  return t ? JSON.parse(t).hookSpecificOutput : null;
++}
++
++test("hook context: full on start, silent while unchanged, one line on change", async () => {
++  const port = nextPort();
++  const b = await startBridge(port);
++  try {
++    const start = await hook(port, "SessionStart");
++    assert.match(start.additionalContext, /^XR: not connected/);
++    assert.equal(await hook(port, "UserPromptSubmit"), null);
++    const sim = await startSim(port);
++    const on = await hook(port, "UserPromptSubmit");
++    assert.match(on.additionalContext, /^XR: connected \(Simulated Quest 3, 0 panel/);
++    assert.match(on.additionalContext, /xr_ask/); // first connect in the session gets the guide
++    assert.equal(await hook(port, "UserPromptSubmit"), null);
++    assert.equal((await hook(port, "UserPromptSubmit", "other")).hookEventName, "UserPromptSubmit"); // other session
++    sim.close();
++    await new Promise((r) => setTimeout(r, 200));
++    assert.match((await hook(port, "UserPromptSubmit")).additionalContext, /^XR: not connected/);
++  } finally {
++    await b.close();
++  }
++});
++
++test("curl command hook variant works and costs a few ms", async () => {
++  const port = nextPort();
++  const b = await startBridge(port);
++  try {
++    const t0 = process.hrtime.bigint();
++    const out = execFileSync("sh", ["-c", `curl -sf -m 1 -H 'content-type: application/json' --data-binary @- http://127.0.0.1:${port}/hook/context || true`], {
++      input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "c" }),
++    }).toString();
++    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
++    assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /^XR: not connected/);
++    assert.ok(ms < 200, `${ms} ms`);
++  } finally {
++    await b.close();
++  }
++});
+diff --git a/claude-config/settings.fast-hooks.example.json b/claude-config/settings.fast-hooks.example.json
+new file mode 100644
+index 0000000..9d0c95f
+--- /dev/null
++++ b/claude-config/settings.fast-hooks.example.json
+@@ -0,0 +1,11 @@
++{
++  "//": "Fast variant: the bridge answers the hook itself. 'http' needs a Claude Code version with HTTP hooks; the curl variant works everywhere. Use ONE of the two blocks per event. If the bridge is not running, the http hook fails as a non-blocking error and nothing is injected (= not connected).",
++  "hooks": {
++    "SessionStart": [
++      { "hooks": [ { "type": "http", "url": "http://127.0.0.1:47800/hook/context", "timeout": 2 } ] }
++    ],
++    "UserPromptSubmit": [
++      { "hooks": [ { "type": "command", "command": "curl -sf -m 1 -H 'content-type: application/json' --data-binary @- http://127.0.0.1:47800/hook/context || true", "timeout": 2 } ] }
++    ]
++  }
++}

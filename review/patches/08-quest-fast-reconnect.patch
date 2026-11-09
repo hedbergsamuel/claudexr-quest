@@ -1,0 +1,124 @@
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/BridgeConnection.kt b/quest-app/app/src/main/java/com/claudexr/quest/BridgeConnection.kt
+index 137df9b..d28fa49 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/BridgeConnection.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/BridgeConnection.kt
+@@ -35,18 +35,49 @@ class BridgeConnection(
+   val host: StateFlow<String?> = _host
+ 
+   private val main = Handler(Looper.getMainLooper())
+-  private val http = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
+-  private val discovery = BridgeDiscovery(context) { url, name -> main.post { connect(url, name) } }
++  private val http =
++      OkHttpClient.Builder()
++          // LAN: a stale cached address must fail fast (default connect timeout is 10 s).
++          .connectTimeout(2, TimeUnit.SECONDS)
++          // Detect a dead link in ~5-10 s instead of 15-30 s.
++          .pingInterval(5, TimeUnit.SECONDS)
++          .build()
++  private val prefs = context.getSharedPreferences("bridge", Context.MODE_PRIVATE)
++  /** Latest address seen via mDNS; preferred over the cached one on the next attempt. */
++  private var discovered: Pair<String, String>? = null
++  private val discovery =
++      BridgeDiscovery(context) { url, name ->
++        main.post {
++          discovered = url to name
++          connect(url, name)
++        }
++      }
+   private var socket: WebSocket? = null
+   private var running = false
++  private var attempt = 0
++  private val retryRunnable = Runnable { if (running && socket == null) start() }
+ 
+   fun start() {
+     running = true
+-    if (fixedUrl != null) connect(fixedUrl, fixedUrl) else search()
++    if (fixedUrl != null) return connect(fixedUrl, fixedUrl)
++    // Try the last bridge we were connected to right away (no mDNS round trip), and browse in parallel
++    // in case its address changed.
++    search()
++    val cached = prefs.getString(KEY_LAST_URL, null)?.let { it to (prefs.getString(KEY_LAST_NAME, null) ?: it) }
++    (discovered ?: cached)?.let { (url, name) -> connect(url, name) }
++  }
++
++  /** Reconnect now instead of waiting for the backoff timer (e.g. when the headset is put back on). */
++  fun nudge() {
++    if (!running || socket != null) return
++    main.removeCallbacks(retryRunnable)
++    attempt = 0
++    start()
+   }
+ 
+   fun stop() {
+     running = false
++    main.removeCallbacks(retryRunnable)
+     discovery.stop()
+     socket?.close(1000, "app closed")
+     socket = null
+@@ -61,18 +92,23 @@ class BridgeConnection(
+ 
+   private fun connect(url: String, name: String) {
+     if (!running || socket != null) return
+-    discovery.stop()
+     _state.value = State.CONNECTING
+     Log.i(TAG, "connecting to $url ($name)")
+     val request = Request.Builder().url(url).build()
+     socket = http.newWebSocket(request, Listener(name))
+   }
+ 
++  /** 250 ms, 500 ms, 1 s, 2 s, 4 s, then every 5 s, each with +-20 % jitter. */
+   private fun scheduleRetry() {
+     socket = null
+     _state.value = State.SEARCHING
+     _host.value = null
+-    if (running) main.postDelayed({ if (running && socket == null) start() }, 2000)
++    if (!running) return
++    val base = minOf(5_000L, 250L shl minOf(attempt, 5))
++    attempt++
++    val delay = (base * (0.8 + Math.random() * 0.4)).toLong()
++    main.removeCallbacks(retryRunnable)
++    main.postDelayed(retryRunnable, delay)
+   }
+ 
+   private inner class Listener(private val name: String) : WebSocketListener() {
+@@ -83,9 +119,14 @@ class BridgeConnection(
+     override fun onMessage(webSocket: WebSocket, text: String) {
+       val msg = Protocol.parse(text) ?: return
+       main.post {
+-        if (msg is Welcome) {
++        if (msg is Welcome && socket === webSocket) {
+           _state.value = State.CONNECTED
+           _host.value = msg.host.ifBlank { name }
++          attempt = 0
++          discovery.stop()
++          // Remember the working address for an instant reconnect next time (also after app restart).
++          val url = webSocket.request().url.toString().replaceFirst("http", "ws")
++          prefs.edit().putString(KEY_LAST_URL, url).putString(KEY_LAST_NAME, name).apply()
+         }
+         onMessage(msg)
+       }
+@@ -108,5 +149,7 @@ class BridgeConnection(
+ 
+   companion object {
+     private const val TAG = "ClaudeXR.Connection"
++    private const val KEY_LAST_URL = "last_url"
++    private const val KEY_LAST_NAME = "last_name"
+   }
+ }
+diff --git a/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt b/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
+index a0b0ffc..f7938dd 100644
+--- a/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
++++ b/quest-app/app/src/main/java/com/claudexr/quest/MainActivity.kt
+@@ -91,6 +91,12 @@ class MainActivity : AppSystemActivity() {
+     recenterRequested = true
+   }
+ 
++  override fun onResume() {
++    super.onResume()
++    // Headset put back on / app back in focus: reconnect immediately instead of waiting for backoff.
++    if (::connection.isInitialized) connection.nudge()
++  }
++
+   override fun onDestroy() {
+     connection.stop()
+     super.onDestroy()

@@ -1,0 +1,133 @@
+diff --git a/mac-helper/Sources/claudexr-capture/AppleSTT.swift b/mac-helper/Sources/claudexr-capture/AppleSTT.swift
+index 9e28d96..eb828e7 100644
+--- a/mac-helper/Sources/claudexr-capture/AppleSTT.swift
++++ b/mac-helper/Sources/claudexr-capture/AppleSTT.swift
+@@ -14,20 +14,30 @@ enum AppleSTT {
+       }
+       var best: (text: String, lang: String, conf: Float) = ("", locales[0], -1)
+       let group = DispatchGroup()
++      // Review 2 R2-07: callbacks of the recognizers run concurrently, and a task may report a final
++      // result AND an error: guard `best` and leave the group exactly once per task.
++      let lock = NSLock()
+       for loc in locales {
+         guard let r = SFSpeechRecognizer(locale: Locale(identifier: loc)), r.supportsOnDeviceRecognition else { continue }
+         let req = SFSpeechURLRecognitionRequest(url: url)
+         req.requiresOnDeviceRecognition = true
+         req.shouldReportPartialResults = false
+         group.enter()
++        var left = false
++        let leaveOnce = {
++          lock.lock(); defer { lock.unlock() }
++          if !left { left = true; group.leave() }
++        }
+         r.recognitionTask(with: req) { result, error in
+           if let result, result.isFinal {
+             let segs = result.bestTranscription.segments
+             let conf = segs.isEmpty ? 0 : segs.map(\.confidence).reduce(0, +) / Float(segs.count)
++            lock.lock()
+             if conf > best.conf { best = (result.bestTranscription.formattedString, loc, conf) }
+-            group.leave()
++            lock.unlock()
++            leaveOnce()
+           } else if error != nil {
+-            group.leave()
++            leaveOnce()
+           }
+         }
+       }
+diff --git a/mac-helper/Sources/claudexr-capture/Capture.swift b/mac-helper/Sources/claudexr-capture/Capture.swift
+index 538ee24..cc5db83 100644
+--- a/mac-helper/Sources/claudexr-capture/Capture.swift
++++ b/mac-helper/Sources/claudexr-capture/Capture.swift
+@@ -1,3 +1,4 @@
++import Carbon // IsSecureEventInputEnabled
+ import CoreMedia
+ import Foundation
+ import ScreenCaptureKit
+@@ -16,8 +17,27 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
+   private var session: VTCompressionSession?
+   private let out = DispatchQueue(label: "claudexr.out") // serializes stdout writes
+   private let captureQueue = DispatchQueue(label: "claudexr.capture")
+-  private var forceKey = true
+-  private var paused = false
++  // Review 2 R2-07: these were written from the stdin thread / main queue and read on the capture queue
++  // (data race; an IDR request could be lost). All access now goes through `state`.
++  private let state = NSLock()
++  private var _forceKey = true
++  private var _paused = false
++  private var secureInput = false
++  private var forceKey: Bool {
++    get { state.lock(); defer { state.unlock() }; return _forceKey }
++    set { state.lock(); _forceKey = newValue; state.unlock() }
++  }
++  private var paused: Bool {
++    get { state.lock(); defer { state.unlock() }; return _paused }
++    set { state.lock(); _paused = newValue; state.unlock() }
++  }
++  /** Take-and-clear, so two threads can't both consume (or lose) one IDR request. */
++  private func takeForceKey() -> Bool {
++    state.lock(); defer { state.unlock() }
++    let k = _forceKey
++    _forceKey = false
++    return k
++  }
+   private var startTime: CMTime?
+ 
+   init(windowID: UInt32?, displayID: UInt32?, excludeBundles: [String], fps: Int, bitrate: Int, maxWidth: Int) {
+@@ -105,6 +125,17 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
+ 
+   func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
+     guard type == .screen, !paused, let session, let px = CMSampleBufferGetImageBuffer(sb) else { return }
++    // Review 2 R2-07: while any app has Secure Event Input on (password prompts in Terminal/iTerm for
++    // sudo/ssh, password fields), send nothing. Cheap (one syscall-free call per frame).
++    let secure = IsSecureEventInputEnabled()
++    if secure != secureInput {
++      secureInput = secure
++      if secure { emit(["event": "paused", "reason": "secure_input"]) } else {
++        forceKey = true
++        emit(["event": "resumed"])
++      }
++    }
++    if secure { return }
+     // Only complete frames (ScreenCaptureKit also delivers idle/blank status frames).
+     if let att = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+       let raw = att.first?[.status] as? Int, let status = SCFrameStatus(rawValue: raw), status != .complete
+@@ -113,8 +144,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
+     }
+     let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+     var props: CFDictionary?
+-    if forceKey {
+-      forceKey = false
++    if takeForceKey() {
+       props = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
+     }
+     VTCompressionSessionEncodeFrame(session, imageBuffer: px, presentationTimeStamp: pts, duration: .invalid, frameProperties: props, infoFlagsOut: nil) {
+@@ -143,19 +173,19 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
+         }
+       }
+     }
+-    var length = 0
+-    var dataPtr: UnsafeMutablePointer<CChar>?
+-    guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPtr) == noErr, let dataPtr else { return }
++    // Review 2 R2-07: the block buffer may be non-contiguous; GetDataPointer then only covers the first
++    // segment (reading `totalLength` bytes from it would run past the segment). Copy out explicitly.
++    let length = CMBlockBufferGetDataLength(block)
++    var avcc = [UInt8](repeating: 0, count: length)
++    guard CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: &avcc) == kCMBlockBufferNoErr else { return }
+     var off = 0
+     while off + 4 <= length {
+-      var nalLen: UInt32 = 0
+-      memcpy(&nalLen, dataPtr + off, 4)
+-      nalLen = CFSwapInt32BigToHost(nalLen)
++      let nalLen = Int(avcc[off]) << 24 | Int(avcc[off + 1]) << 16 | Int(avcc[off + 2]) << 8 | Int(avcc[off + 3])
+       off += 4
+-      guard off + Int(nalLen) <= length else { break }
++      guard nalLen > 0, off + nalLen <= length else { break }
+       annexB.append(contentsOf: start)
+-      dataPtr.advanced(by: off).withMemoryRebound(to: UInt8.self, capacity: Int(nalLen)) { annexB.append($0, count: Int(nalLen)) }
+-      off += Int(nalLen)
++      annexB.append(contentsOf: avcc[off..<(off + nalLen)])
++      off += nalLen
+     }
+     let ptsUs = UInt64(max(0, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) * 1_000_000))
+     var header = Data(count: 13)

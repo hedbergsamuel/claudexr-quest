@@ -1,0 +1,92 @@
+diff --git a/bridge/src/backend.ts b/bridge/src/backend.ts
+index 9d6fb8b..7efc073 100644
+--- a/bridge/src/backend.ts
++++ b/bridge/src/backend.ts
+@@ -21,6 +21,7 @@ export class AutoBackend implements XrBackend {
+   private hub: XrHub | null = null;
+   private mdns: MdnsHandle | null = null;
+   private becoming: Promise<boolean> | null = null;
++  private watcher?: NodeJS.Timeout;
+ 
+   constructor(private readonly opts: BackendOptions) {}
+ 
+@@ -44,6 +45,7 @@ export class AutoBackend implements XrBackend {
+           const code = (e as NodeJS.ErrnoException).code;
+           if (code !== "EADDRINUSE") throw e;
+           log(`port ${this.opts.port} in use, forwarding to the existing bridge`);
++          this.watchForTakeover();
+           return false;
+         } finally {
+           this.becoming = null;
+@@ -53,6 +55,27 @@ export class AutoBackend implements XrBackend {
+     return this.becoming;
+   }
+ 
++  /**
++   * In client mode, try to take over the port as soon as the hub process exits, without waiting for the
++   * next tool call. Otherwise the headset cannot reconnect and the hook reports "bridge not running",
++   * which makes Claude avoid xr_* tools, so the lazy takeover would never happen.
++   */
++  private watchForTakeover() {
++    if (this.watcher) return;
++    this.watcher = setInterval(() => {
++      if (this.hub) return this.stopWatching();
++      this.tryBecomeHub()
++        .then((ok) => ok && this.stopWatching())
++        .catch(() => {});
++    }, 1000 + Math.floor(Math.random() * 250));
++    this.watcher.unref();
++  }
++
++  private stopWatching() {
++    clearInterval(this.watcher);
++    this.watcher = undefined;
++  }
++
+   async status(): Promise<XrStatus | null> {
+     if (this.hub) return this.hub.status();
+     try {
+@@ -74,6 +97,7 @@ export class AutoBackend implements XrBackend {
+   }
+ 
+   async close() {
++    this.stopWatching();
+     await this.mdns?.stop();
+     await this.hub?.close();
+   }
+diff --git a/bridge/test/takeover.test.ts b/bridge/test/takeover.test.ts
+new file mode 100644
+index 0000000..879197a
+--- /dev/null
++++ b/bridge/test/takeover.test.ts
+@@ -0,0 +1,30 @@
++// Regression test for review finding F7: the surviving bridge takes over without waiting for a tool call.
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import net from "node:net";
++import { startBridge, startSim, nextPort } from "./helpers.js";
++
++const listening = (port: number) =>
++  new Promise<boolean>((resolve) => {
++    const s = net.connect(port, "127.0.0.1", () => (s.destroy(), resolve(true)));
++    s.on("error", () => resolve(false));
++  });
++
++test("headset can reconnect within ~2 s after the hub session exits (no tool call needed)", async () => {
++  const port = nextPort();
++  const hub = await startBridge(port);
++  const second = await startBridge(port);
++  await hub.close();
++  const t0 = Date.now();
++  while (!(await listening(port)) && Date.now() - t0 < 4000) await new Promise((r) => setTimeout(r, 100));
++  const took = Date.now() - t0;
++  const sim = await startSim(port);
++  try {
++    assert.ok(took < 2500, `port was free for ${took} ms`);
++    const s = await second.call("xr_status");
++    assert.equal(s.json.connected, true);
++  } finally {
++    sim?.close();
++    await second.close();
++  }
++});

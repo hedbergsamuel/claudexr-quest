@@ -1,0 +1,272 @@
+diff --git a/bridge/src/backend.ts b/bridge/src/backend.ts
+index 9d6fb8b..00e9547 100644
+--- a/bridge/src/backend.ts
++++ b/bridge/src/backend.ts
+@@ -9,7 +9,7 @@ import { log } from "./log.js";
+ 
+ export interface XrBackend {
+   status(): Promise<XrStatus | null>;
+-  execute(cmd: HubCommand): Promise<CommandResult>;
++  execute(cmd: HubCommand, signal?: AbortSignal): Promise<CommandResult>;
+ }
+ 
+ export interface BackendOptions {
+@@ -63,12 +63,13 @@ export class AutoBackend implements XrBackend {
+     }
+   }
+ 
+-  async execute(cmd: HubCommand): Promise<CommandResult> {
+-    if (this.hub) return this.hub.execute(cmd);
++  async execute(cmd: HubCommand, signal?: AbortSignal): Promise<CommandResult> {
++    if (this.hub) return this.hub.execute(cmd, signal);
+     try {
+-      return (await httpJson("POST", this.opts.port, "/command", cmd)) as CommandResult;
++      return (await httpJson("POST", this.opts.port, "/command", cmd, 0, signal)) as CommandResult;
+     } catch (e) {
+-      if (isRefused(e) && (await this.tryBecomeHub())) return this.hub!.execute(cmd);
++      if (signal?.aborted) return { status: "cancelled" };
++      if (isRefused(e) && (await this.tryBecomeHub())) return this.hub!.execute(cmd, signal);
+       throw e;
+     }
+   }
+@@ -84,11 +85,11 @@ function isRefused(e: unknown) {
+ }
+ 
+ /** Minimal loopback JSON client without timeouts (xr_ask may legitimately wait for minutes). */
+-export function httpJson(method: string, port: number, path: string, body?: unknown, timeoutMs = 0): Promise<unknown> {
++export function httpJson(method: string, port: number, path: string, body?: unknown, timeoutMs = 0, signal?: AbortSignal): Promise<unknown> {
+   return new Promise((resolve, reject) => {
+     const data = body === undefined ? undefined : JSON.stringify(body);
+     const req = http.request(
+-      { host: "127.0.0.1", port, path, method, headers: data ? { "content-type": "application/json" } : {} },
++      { host: "127.0.0.1", port, path, method, signal, headers: data ? { "content-type": "application/json" } : {} },
+       (res) => {
+         let buf = "";
+         res.on("data", (c) => (buf += c));
+diff --git a/bridge/src/hub.ts b/bridge/src/hub.ts
+index d1ad0d7..42664c6 100644
+--- a/bridge/src/hub.ts
++++ b/bridge/src/hub.ts
+@@ -105,9 +105,9 @@ export class XrHub {
+     };
+   }
+ 
+-  execute(cmd: HubCommand): Promise<CommandResult> {
++  execute(cmd: HubCommand, signal?: AbortSignal): Promise<CommandResult> {
+     if (cmd.op === "clear") return Promise.resolve(this.clear(cmd.id, cmd.role));
+-    return this.show(cmd.role, cmd.panel, cmd.wait, cmd.timeoutMs);
++    return this.show(cmd.role, cmd.panel, cmd.wait, cmd.timeoutMs, signal);
+   }
+ 
+   // ---------------- internals ----------------
+@@ -116,7 +116,7 @@ export class XrHub {
+     return !!this.headset && this.headset.ws.readyState === WebSocket.OPEN;
+   }
+ 
+-  private show(role: Role, panel: PanelSpec, wait: boolean, timeoutMs: number): Promise<CommandResult> {
++  private show(role: Role, panel: PanelSpec, wait: boolean, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
+     if (!this.isConnected()) return Promise.resolve({ status: "not_connected" });
+     const id = randomUUID().slice(0, 8);
+     const msg: ShowMsg = { type: "show", id, role, awaitingResponse: wait, panel };
+@@ -130,11 +130,23 @@ export class XrHub {
+     if (!wait) return Promise.resolve({ status: "shown", panelId: id });
+ 
+     return new Promise<CommandResult>((resolve) => {
+-      open.resolve = resolve;
++      const onAbort = () => {
++        // Claude stopped waiting: take the question down so the user is not left answering into the void.
++        if (!this.panels.has(id)) return;
++        this.removePanel(id, true);
++        resolve({ status: "cancelled", panelId: id });
++      };
++      open.resolve = (r) => {
++        signal?.removeEventListener("abort", onAbort);
++        resolve(r);
++      };
+       open.timer = setTimeout(() => {
++        signal?.removeEventListener("abort", onAbort);
+         this.removePanel(id, true);
+         resolve({ status: "timeout", panelId: id });
+       }, timeoutMs);
++      if (signal?.aborted) onAbort();
++      else signal?.addEventListener("abort", onAbort, { once: true });
+     });
+   }
+ 
+@@ -258,10 +270,15 @@ export class XrHub {
+     if (path === "/command" && req.method === "POST") {
+       let body = "";
+       req.on("data", (c) => (body += c));
++      // If the forwarding bridge goes away (its MCP call was cancelled), cancel the panel too.
++      const ac = new AbortController();
++      res.on("close", () => {
++        if (!res.writableFinished) ac.abort();
++      });
+       req.on("end", async () => {
+         try {
+           const cmd = JSON.parse(body) as HubCommand;
+-          json(200, await this.execute(cmd));
++          json(200, await this.execute(cmd, ac.signal));
+         } catch (e) {
+           json(400, { error: String(e) });
+         }
+diff --git a/bridge/src/protocol.ts b/bridge/src/protocol.ts
+index da15545..a92e57d 100644
+--- a/bridge/src/protocol.ts
++++ b/bridge/src/protocol.ts
+@@ -90,6 +90,7 @@ export type CommandStatus =
+   | "cleared"
+   | "dismissed" // user closed the panel without answering
+   | "timeout"
++  | "cancelled" // Claude Code cancelled the tool call (e.g. user pressed Esc); panel removed
+   | "not_connected";
+ 
+ export interface CommandResult {
+diff --git a/bridge/src/tools.ts b/bridge/src/tools.ts
+index 63e37b5..5d1d6aa 100644
+--- a/bridge/src/tools.ts
++++ b/bridge/src/tools.ts
+@@ -1,6 +1,6 @@
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { z } from "zod";
+-import { CommandResult, ROLES, SIZES, XrStatus } from "./protocol.js";
++import { CommandResult, HubCommand, ROLES, SIZES, XrStatus } from "./protocol.js";
+ import { XrBackend } from "./backend.js";
+ import { lanAddresses, rewriteLocalUrl } from "./net.js";
+ 
+@@ -16,6 +16,35 @@ const timeout = z
+   .optional()
+   .describe("Seconds to wait for the user before giving up (default 300)");
+ 
++/** What the MCP SDK passes as the second handler argument (subset we use). */
++interface Extra {
++  signal: AbortSignal;
++  _meta?: { progressToken?: string | number };
++  sendNotification: (n: { method: "notifications/progress"; params: { progressToken: string | number; progress: number; message?: string } }) => Promise<void>;
++}
++
++/**
++ * Run a blocking headset command with cancellation and keep-alive progress.
++ * Progress notifications count as activity for Claude Code's MCP idle timeout (30 min for stdio).
++ */
++async function blocking(backend: XrBackend, cmd: HubCommand, extra: Extra): Promise<CommandResult> {
++  const token = extra._meta?.progressToken;
++  let n = 0;
++  const keepAlive =
++    token === undefined
++      ? undefined
++      : setInterval(() => {
++          extra
++            .sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++n, message: "waiting for the user in XR" } })
++            .catch(() => {});
++        }, 15_000);
++  try {
++    return await backend.execute(cmd, extra.signal);
++  } finally {
++    clearInterval(keepAlive);
++  }
++}
++
+ type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
+ 
+ function reply(text: string, result?: CommandResult | XrStatus | null): ToolResult {
+@@ -26,6 +55,7 @@ function reply(text: string, result?: CommandResult | XrStatus | null): ToolResu
+ 
+ function fallback(result: CommandResult, what: string): ToolResult | null {
+   if (result.status === "not_connected") return reply(NOT_CONNECTED, result);
++  if (result.status === "cancelled") return reply(`The ${what} was cancelled and removed from the headset.`, result);
+   if (result.status === "timeout")
+     return reply(`No answer in the headset within the time limit (${what}). Panel removed. Ask the user in the terminal instead.`, result);
+   if (result.status === "dismissed")
+@@ -83,15 +113,15 @@ export function registerTools(server: McpServer, backend: XrBackend) {
+         timeout_seconds: timeout,
+       },
+     },
+-    async ({ question, options, context, timeout_seconds }) => {
++    async ({ question, options, context, timeout_seconds }, extra) => {
+       const opts = options.map((o) => (typeof o === "string" ? { label: o } : o));
+-      const r = await backend.execute({
++      const r = await blocking(backend, {
+         op: "show",
+         role: "primary",
+         panel: { kind: "ask", question, options: opts, context },
+         wait: true,
+         timeoutMs: ms(timeout_seconds),
+-      });
++      }, extra as unknown as Extra);
+       const fb = fallback(r, "question");
+       if (fb) return fb;
+       const i = Number(r.data?.choiceIndex);
+@@ -143,8 +173,8 @@ export function registerTools(server: McpServer, backend: XrBackend) {
+         timeout_seconds: timeout,
+       },
+     },
+-    async ({ title, question, a, b, wait_for_choice, timeout_seconds }) => {
+-      const r = await backend.execute({
++    async ({ title, question, a, b, wait_for_choice, timeout_seconds }, extra) => {
++      const r = await blocking(backend, {
+         op: "show",
+         role: "compare",
+         panel: {
+@@ -157,7 +187,7 @@ export function registerTools(server: McpServer, backend: XrBackend) {
+         },
+         wait: wait_for_choice,
+         timeoutMs: ms(timeout_seconds),
+-      });
++      }, extra as unknown as Extra);
+       const fb = fallback(r, "comparison");
+       if (fb) return fb;
+       if (!wait_for_choice) return reply(`Comparison is shown in the headset (panel ${r.panelId}).`, r);
+@@ -182,14 +212,14 @@ export function registerTools(server: McpServer, backend: XrBackend) {
+         timeout_seconds: timeout,
+       },
+     },
+-    async ({ title, instructions, url, checklist, timeout_seconds }) => {
+-      const r = await backend.execute({
++    async ({ title, instructions, url, checklist, timeout_seconds }, extra) => {
++      const r = await blocking(backend, {
+         op: "show",
+         role: "primary",
+         panel: { kind: "test", title, instructions, url: url ? fixUrl(url) : undefined, checklist },
+         wait: true,
+         timeoutMs: ms(timeout_seconds ?? 600),
+-      });
++      }, extra as unknown as Extra);
+       const fb = fallback(r, "test");
+       if (fb) return fb;
+       const verdict = String(r.data?.verdict);
+diff --git a/bridge/test/cancel.test.ts b/bridge/test/cancel.test.ts
+new file mode 100644
+index 0000000..67735c6
+--- /dev/null
++++ b/bridge/test/cancel.test.ts
+@@ -0,0 +1,29 @@
++// Regression test for review finding F5: a cancelled xr_ask must not leave an orphan question in the headset.
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { startBridge, startSim, nextPort, waitFor } from "./helpers.js";
++
++for (const mode of ["hub", "forwarded"] as const) {
++  test(`cancelled xr_ask removes the panel (${mode})`, async () => {
++    const port = nextPort();
++    const hub = await startBridge(port);
++    const second = mode === "forwarded" ? await startBridge(port) : hub;
++    const sim = await startSim(port, { silent: true });
++    try {
++      const ac = new AbortController();
++      const p = second.client
++        .callTool({ name: "xr_ask", arguments: { question: "Q?", options: ["a", "b"], timeout_seconds: 300 } }, undefined, { signal: ac.signal })
++        .catch(() => "aborted");
++      await waitFor(() => sim.lines.some((l) => l.startsWith("[sim] show ask")));
++      ac.abort();
++      assert.equal(await p, "aborted");
++      await waitFor(() => sim.lines.some((l) => l.startsWith("[sim] clear")));
++      const s = await hub.call("xr_status");
++      assert.equal(s.json.openPanels.length, 0);
++    } finally {
++      sim.close();
++      if (second !== hub) await second.close();
++      await hub.close();
++    }
++  });
++}

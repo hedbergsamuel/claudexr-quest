@@ -1,0 +1,119 @@
+diff --git a/bridge/src/hub.ts b/bridge/src/hub.ts
+index d1ad0d7..dd0e7ec 100644
+--- a/bridge/src/hub.ts
++++ b/bridge/src/hub.ts
+@@ -17,7 +17,7 @@ import {
+   XrStatus,
+   BridgeToHeadset,
+ } from "./protocol.js";
+-import { lanAddresses } from "./net.js";
++import { lanAddresses, rewriteLocalUrl } from "./net.js";
+ import { log } from "./log.js";
+ 
+ interface OpenPanel {
+@@ -32,6 +32,8 @@ interface HeadsetConn {
+   app?: string;
+   since: Date;
+   remoteAddress?: string;
++  /** The Mac's own address on the interface the headset reached us through: always routable from the headset. */
++  localAddress?: string;
+   alive: boolean;
+ }
+ 
+@@ -119,7 +121,7 @@ export class XrHub {
+   private show(role: Role, panel: PanelSpec, wait: boolean, timeoutMs: number): Promise<CommandResult> {
+     if (!this.isConnected()) return Promise.resolve({ status: "not_connected" });
+     const id = randomUUID().slice(0, 8);
+-    const msg: ShowMsg = { type: "show", id, role, awaitingResponse: wait, panel };
++    const msg: ShowMsg = { type: "show", id, role, awaitingResponse: wait, panel: this.reachable(panel) };
+     // A new panel replaces whatever non-blocking panel occupied the same role.
+     for (const [pid, p] of this.panels) {
+       if (p.msg.role === role && !p.resolve) this.removePanel(pid, true);
+@@ -138,6 +140,22 @@ export class XrHub {
+     });
+   }
+ 
++  /** Rewrite localhost URLs to the address the headset actually uses to reach this Mac. */
++  private reachable(panel: PanelSpec): PanelSpec {
++    const host = process.env.CLAUDEXR_LAN_HOST || this.headset?.localAddress;
++    const fix = (u: string) => rewriteLocalUrl(u, host);
++    switch (panel.kind) {
++      case "preview":
++        return { ...panel, url: fix(panel.url) };
++      case "compare":
++        return { ...panel, a: { ...panel.a, url: fix(panel.a.url) }, b: { ...panel.b, url: fix(panel.b.url) } };
++      case "test":
++        return panel.url ? { ...panel, url: fix(panel.url) } : panel;
++      default:
++        return panel;
++    }
++  }
++
+   private clear(id?: string, role?: Role): CommandResult {
+     const ids = [...this.panels.keys()].filter((pid) => {
+       const p = this.panels.get(pid)!;
+@@ -180,7 +198,13 @@ export class XrHub {
+   }
+ 
+   private onHeadset(ws: WebSocket, req: http.IncomingMessage) {
+-    const conn: HeadsetConn = { ws, since: new Date(), remoteAddress: req.socket.remoteAddress, alive: true };
++    const conn: HeadsetConn = {
++      ws,
++      since: new Date(),
++      remoteAddress: req.socket.remoteAddress,
++      localAddress: req.socket.localAddress?.replace(/^::ffff:/, ""),
++      alive: true,
++    };
+     ws.on("pong", () => (conn.alive = true));
+     ws.on("message", (raw) => {
+       let msg: HeadsetToBridge;
+diff --git a/bridge/src/tools.ts b/bridge/src/tools.ts
+index 63e37b5..cef6785 100644
+--- a/bridge/src/tools.ts
++++ b/bridge/src/tools.ts
+@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { z } from "zod";
+ import { CommandResult, ROLES, SIZES, XrStatus } from "./protocol.js";
+ import { XrBackend } from "./backend.js";
+-import { lanAddresses, rewriteLocalUrl } from "./net.js";
++import { rewriteLocalUrl } from "./net.js";
+ 
+ const NOT_CONNECTED =
+   "XR headset is NOT connected. Nothing was shown. Fall back to the terminal: ask the user there instead.";
+@@ -33,9 +33,13 @@ function fallback(result: CommandResult, what: string): ToolResult | null {
+   return null;
+ }
+ 
+-/** Make localhost URLs reachable from the headset. */
++/**
++ * Make localhost URLs reachable from the headset. The hub does the final rewrite with the address of the
++ * interface the headset is connected through; guessing lanAddresses()[0] here picked bridge100/utun/VM
++ * interfaces on Macs that are not on en0 Wi-Fi.
++ */
+ function fixUrl(url: string): string {
+-  return rewriteLocalUrl(url, process.env.CLAUDEXR_LAN_HOST || lanAddresses()[0]);
++  return process.env.CLAUDEXR_LAN_HOST ? rewriteLocalUrl(url, process.env.CLAUDEXR_LAN_HOST) : url;
+ }
+ 
+ export function registerTools(server: McpServer, backend: XrBackend) {
+diff --git a/bridge/test/tools.test.ts b/bridge/test/tools.test.ts
+index 42d6cf3..103aa50 100644
+--- a/bridge/test/tools.test.ts
++++ b/bridge/test/tools.test.ts
+@@ -190,3 +190,16 @@ test("hub takeover: when the hub exits, the remaining bridge takes over the port
+     await second.close();
+   }
+ });
++
++test("localhost is rewritten to the address the headset connected to (no interface guessing)", async () => {
++  const port = nextPort();
++  const b = await startBridge(port); // no CLAUDEXR_LAN_HOST
++  const sim = await startSim(port); // connects via 127.0.0.1 -> local address 127.0.0.1
++  try {
++    await b.call("xr_preview", { url: "http://localhost:5173/" });
++    await waitFor(() => sim.lines.some((l) => l.includes('"url":"http://127.0.0.1:5173/"')));
++  } finally {
++    sim.close();
++    await b.close();
++  }
++});

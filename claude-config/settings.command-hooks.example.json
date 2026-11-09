@@ -1,0 +1,81 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-context.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-context.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-permission.mjs\"",
+            "timeout": 150
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

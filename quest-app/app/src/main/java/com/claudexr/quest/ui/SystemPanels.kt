@@ -45,6 +45,7 @@ fun StatusPanel(
     voiceOpen: Boolean,
     onRecenter: () -> Unit,
     onCloseAll: () -> Unit,
+    onCloseOthers: () -> Unit,
     onRestartDisplay: () -> Unit,
     onCalibrate: () -> Unit,
     onAdjust: () -> Unit,
@@ -84,6 +85,7 @@ fun StatusPanel(
     if (hud != null && hud.displayState != "live" && state == "CONNECTED") {
       TextButton(onClick = onRestartDisplay) { Text("Starta skärmen", color = Accent, fontSize = SmallSize) }
     }
+    TextButton(onClick = onCloseOthers) { Text("Stäng utom skärmen", color = Muted, fontSize = SmallSize) }
     TextButton(onClick = onCloseAll) { Text("Stäng allt", color = Color(0xFFF08A8A), fontSize = SmallSize, fontWeight = FontWeight.SemiBold) }
     TextButton(onClick = onCalibrate) { Text("Kalibrera skärm", color = Muted, fontSize = SmallSize) }
     TextButton(onClick = onAdjust) { Text("Justera", color = Muted, fontSize = SmallSize) }

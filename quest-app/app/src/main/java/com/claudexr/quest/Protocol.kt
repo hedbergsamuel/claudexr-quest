@@ -368,6 +368,7 @@ object Protocol {
       JSONObject().put("type", "voice_decision").put("id", id).put("send", send).toString()
 
   const val EMERGENCY_CLOSE = """{"type":"emergency_close"}"""
+  const val CLOSE_OTHERS = """{"type":"close_others"}"""
   const val RESTART_DISPLAY = """{"type":"restart_display"}"""
 
   fun heardAnswer(send: Boolean): JSONObject = JSONObject().put("send", send)

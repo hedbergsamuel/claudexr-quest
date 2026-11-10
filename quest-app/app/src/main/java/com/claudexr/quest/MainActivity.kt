@@ -217,6 +217,7 @@ class MainActivity : AppSystemActivity() {
                 voiceOpen = voiceOpen.value,
                 onRecenter = { recenterRequested = true },
                 onCloseAll = ::closeEverything,
+                onCloseOthers = { connection.send(Protocol.CLOSE_OTHERS); showToast(Toast("Stänger allt utom Macens skärm", "done", false)) },
                 onRestartDisplay = { connection.send(Protocol.RESTART_DISPLAY) },
                 onCalibrate = { connection.send("""{"type":"request_calibration"}""") },
                 onAdjust = { adjustEntity?.setComponent(Visible(true)) },

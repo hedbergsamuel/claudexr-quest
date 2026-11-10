@@ -12,7 +12,7 @@ export function contextLine(status: XrStatus | null): string {
   const stale = status.openPanels.filter((p) => p.stale && !p.minimized).length;
   return (
     `XR: connected (${status.device ?? "Quest"}). User sees XR panels in their room; follow the xr-presenter skill (be proactive, keep ≤6 panels).` +
-    (stale ? ` ${stale} stale panel(s): close or tidy.` : "") +
+    (stale ? ` ${stale} stale panel(s): close or tidy (never the Mac screen).` : "") +
     (status.devMode ? " Dev mode on: xr-devmode skill." : "")
   );
 }

@@ -313,7 +313,7 @@ export class XrHub {
       movedByUser: p.movedByUser,
       createdAt: new Date(p.createdAt).toISOString(),
       updatedAt: new Date(p.updatedAt).toISOString(),
-      stale: !p.resolve && Date.now() - p.updatedAt > STALE_MS,
+      stale: !p.resolve && !p.streamId && Date.now() - p.updatedAt > STALE_MS, // levande strömpaneler är aldrig stale (BUG-7cf1b6)
       minimized: p.minimized,
       ...(p.streamId ? { streamId: p.streamId } : {}),
     };
@@ -1240,7 +1240,7 @@ export class XrHub {
 
   /** Model-free housekeeping: minimize stale panels and keep at most MAX_VISIBLE panels expanded. */
   private autoTidy() {
-    const visible = [...this.panels.values()].filter((p) => !p.minimized && !p.resolve && p.msg.role !== "overlay");
+    const visible = [...this.panels.values()].filter((p) => !p.minimized && !p.resolve && !p.streamId && p.msg.role !== "overlay");
     const toMin = new Set<OpenPanel>(visible.filter((p) => Date.now() - p.updatedAt > STALE_MS));
     const rest = visible.filter((p) => !toMin.has(p)).sort((a, b) => a.updatedAt - b.updatedAt);
     while (rest.length > MAX_VISIBLE) toMin.add(rest.shift()!);

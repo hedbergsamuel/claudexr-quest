@@ -230,6 +230,44 @@ class PanelManager(
     }
   }
 
+  // ---------------- bioskärm (IDE-e587a1) ----------------
+  private var cinemaWidthM = 1.8f
+  private var cinemaDistM = 2.0f
+
+  /**
+   * Macens skärm som bioskärm rakt fram. cinema = stor och rakt fram på 2 m; bigger/smaller ändrar bredden (0,8-4 m),
+   * farther/closer avståndet (1,2-3,5 m); reset = tillbaka på Macens riktiga skärm (kalibrerad overlay).
+   * Bara speglingspanelen (roll overlay) berörs. Obekräftat i headsetet: aldrig körd på riktig hårdvara.
+   */
+  fun screenPreset(preset: String) {
+    val o = macPanel() ?: open.values.firstOrNull { it.role == Role.OVERLAY && it.spec.value is StreamSpec } ?: return
+    if (preset == "reset") {
+      o.movedByUser = false
+      cinemaWidthM = 1.8f
+      cinemaDistM = 2.0f
+      overlay()?.let { applyOverlay(it) } ?: relayout()
+      return
+    }
+    when (preset) {
+      "cinema" -> {
+        cinemaWidthM = 1.8f
+        cinemaDistM = 2.0f
+      }
+      "bigger" -> cinemaWidthM = (cinemaWidthM * 1.25f).coerceIn(0.8f, 4f)
+      "smaller" -> cinemaWidthM = (cinemaWidthM / 1.25f).coerceIn(0.8f, 4f)
+      "farther" -> cinemaDistM = (cinemaDistM + 0.5f).coerceIn(1.2f, 3.5f)
+      "closer" -> cinemaDistM = (cinemaDistM - 0.5f).coerceIn(1.2f, 3.5f)
+      else -> return
+    }
+    val aspect = if (o.videoW > 0) o.videoH.toFloat() / o.videoW else 0.625f
+    o.widthM = cinemaWidthM
+    o.heightM = cinemaWidthM * aspect
+    o.movedByUser = true
+    val pose = layout.relativePose(0f, 0.05f, cinemaDistM)
+    destroy(o)
+    create(o, pose)
+  }
+
   /** Overlay was (re)calibrated or adjusted: move/resize mirror panels. */
   fun applyOverlay(o: OverlayStore.Overlay) {
     open.values.filter { it.role == Role.OVERLAY }.forEach {

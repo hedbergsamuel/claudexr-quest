@@ -16,6 +16,7 @@ import {
   HeadsetToBridge,
   HubCommand,
   LayoutMode,
+  ScreenPreset,
   MDNS_TYPE,
   PROTOCOL_VERSION,
   PanelInfo,
@@ -392,6 +393,8 @@ export class XrHub {
     switch (cmd.op) {
       case "show":
         return this.show(cmd.role, cmd.panel, cmd.wait, cmd.timeoutMs, signal, cmd.widthM, cmd.heightM);
+      case "screen":
+        return this.screenPreset(cmd.preset);
       case "clear":
         // xr_panel close "all" lämnar Macens skärm (BUG-7cf1b6); "everything" stänger även den.
         return cmd.id === "everything" ? this.clear("all", cmd.role) : this.clear(cmd.id, cmd.role, cmd.id === "all" || (!cmd.id && !cmd.role));
@@ -545,6 +548,13 @@ export class XrHub {
     p.minimized = this.permissionPending();
     this.send({ type: "update", id: cmd.id, role: cmd.role, panel, widthM: cmd.widthM, heightM: cmd.heightM, placement: cmd.placement });
     return { status: "updated", panelId: cmd.id };
+  }
+
+  /** Bioskärm-förinställning för Macens skärm (IDE-e587a1). Måten att ändra storlek/avstånd utan att gissa enheter. */
+  private screenPreset(preset: ScreenPreset): CommandResult {
+    if (![...this.streams.streams.values()].some((h) => h.source === "display")) return { status: "not_found", data: { error: "Macens skärm speglas inte just nu (xr_stream display)" } };
+    this.send({ type: "screen_preset", preset });
+    return { status: "updated", data: { preset } };
   }
 
   private layout(mode: LayoutMode): CommandResult {
@@ -1145,6 +1155,16 @@ export class XrHub {
       case "close_all":
         this.clear();
         return this.toast("✓ Stängde alla paneler", "done");
+      case "cinema":
+      case "screen_bigger":
+      case "screen_smaller":
+      case "screen_farther":
+      case "screen_closer":
+      case "screen_reset": {
+        const preset = cmd === "cinema" ? "cinema" : cmd.slice("screen_".length);
+        const r = this.screenPreset(preset as ScreenPreset);
+        return this.toast(r.status === "updated" ? "✓ Macens skärm justerad" : "Macens skärm speglas inte", r.status === "updated" ? "done" : "attention");
+      }
       case "close_others":
         this.clear("all", undefined, true);
         return this.toast("✓ Stängde allt utom Macens skärm", "done");

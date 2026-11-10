@@ -19,3 +19,12 @@ test("KeepAwake: misslyckad start ger inte active", () => {
   k.set(true);
   assert.equal(k.active, false);
 });
+
+import { matchLocalCommand } from "../src/voice.js";
+test("röstkommandon: bioskärm och stäng allt utom skärmen", () => {
+  assert.equal(matchLocalCommand("Bioskärm"), "cinema");
+  assert.equal(matchLocalCommand("återställ"), "screen_reset");
+  assert.equal(matchLocalCommand("längre bort"), "screen_farther");
+  assert.equal(matchLocalCommand("Stäng allt utom macens skärm"), "close_others");
+  assert.equal(matchLocalCommand("stäng alla paneler"), "close_all");
+});

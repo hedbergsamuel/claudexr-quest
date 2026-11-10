@@ -153,12 +153,18 @@ export const normalize = (s: string) =>
     .trim()
     .replace(/^(hej |hey |ok |okej )?claude /, "");
 
-export type LocalCommand = "close_all" | "close_others" | "recenter" | "focus" | "review" | "status" | "pause_streams";
+export type LocalCommand = "close_all" | "close_others" | "cinema" | "screen_bigger" | "screen_smaller" | "screen_farther" | "screen_closer" | "screen_reset" | "recenter" | "focus" | "review" | "status" | "pause_streams";
 
 // Whole-utterance matches only (a TV saying "…and then close all panels and approve…" does not match).
 const COMMANDS: Record<LocalCommand, string[]> = {
   close_all: ["stäng alla paneler", "stäng alla", "stäng allt", "rensa", "rensa allt", "close all panels", "close all", "close everything", "clear all", "clear panels"],
   close_others: ["stäng allt utom skärmen", "stäng allt utom macens skärm", "stäng alla utom skärmen", "stäng alla utom macens skärm", "stäng alla paneler utom skärmen", "stäng alla paneler utom macens skärm", "stäng allt utom macen", "close all except the screen", "close all but the screen", "close everything except the screen", "close all panels except the screen"],
+  cinema: ["bioskärm", "bioskärmen", "bio", "cinema", "cinema screen", "bioläge"],
+  screen_bigger: ["större skärm", "större skärmen", "skärmen större", "gör skärmen större", "bigger screen", "make the screen bigger"],
+  screen_smaller: ["mindre skärm", "mindre skärmen", "skärmen mindre", "gör skärmen mindre", "smaller screen", "make the screen smaller"],
+  screen_farther: ["längre bort", "skärmen längre bort", "flytta skärmen längre bort", "farther away", "move the screen back"],
+  screen_closer: ["närmare", "skärmen närmare", "flytta skärmen närmare", "closer", "move the screen closer"],
+  screen_reset: ["återställ", "återställ skärmen", "återställ placeringen", "reset screen", "reset the screen"],
   recenter: ["centrera", "centrera paneler", "centrera panelerna", "recenter", "re center", "center", "centre", "center panels"],
   focus: ["fokusläge", "fokus", "fokusera", "focus", "focus mode"],
   review: ["visa alla", "normalläge", "visa alla paneler", "show all", "review mode", "normal mode"],

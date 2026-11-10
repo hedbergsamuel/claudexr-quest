@@ -15,6 +15,8 @@ export type Role = (typeof ROLES)[number];
 export const SIZES = ["small", "medium", "large", "wide"] as const;
 export type Size = (typeof SIZES)[number];
 
+export const SCREEN_PRESETS = ["cinema", "bigger", "smaller", "farther", "closer", "reset"] as const;
+export type ScreenPreset = (typeof SCREEN_PRESETS)[number];
 export const LAYOUT_MODES = ["review", "focus", "present", "tidy"] as const;
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
 
@@ -94,6 +96,7 @@ export type BridgeToHeadset =
   | { type: "update"; id: string; role?: Role; panel?: PanelSpec; widthM?: number; heightM?: number; placement?: PanelPlacement }
   | { type: "clear"; id?: string; role?: Role }
   | { type: "layout"; mode: LayoutMode; ids?: string[] }
+  | { type: "screen_preset"; preset: ScreenPreset }
   | { type: "activity"; activity: ActivitySnapshot }
   | { type: "toast"; text: string; level: "info" | "done" | "attention"; sound: boolean }
   | { type: "stream_state"; streamId: string; state: "starting" | "live" | "paused" | "stopped" | "error"; reason?: string; width?: number; height?: number }
@@ -191,6 +194,7 @@ export type HubCommand =
   | { op: "clear"; id?: string; role?: Role }
   | { op: "update"; id: string; role?: Role; title?: string; panel?: Partial<PanelSpec>; widthM?: number; heightM?: number; placement?: PanelPlacement }
   | { op: "layout"; mode: LayoutMode }
+  | { op: "screen"; preset: ScreenPreset }
   | { op: "event"; event: Record<string, unknown> }
   | { op: "list_windows" }
   | { op: "stream_start"; source: "window" | "display"; windowId?: number; displayId?: number; widthM?: number; fps?: number; bitrateMbps?: number; maxWidth?: number; role?: Role; timeoutMs: number }

@@ -280,6 +280,7 @@ class MainActivity : AppSystemActivity() {
       is StreamState -> panels.streamState(msg)
       is Calibrate -> startCalibration(msg)
       Recenter -> recenterRequested = true
+      is ScreenPreset -> panels.screenPreset(msg.preset)
       else -> Unit
     }
   }

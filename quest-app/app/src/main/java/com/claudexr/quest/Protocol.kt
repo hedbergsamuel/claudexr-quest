@@ -117,6 +117,9 @@ data class Toast(val text: String, val level: String, val sound: Boolean) : Brid
 /** Voice command "centrera": move panels in front of the user. */
 object Recenter : BridgeMessage
 
+/** Macens skärm som bioskärm: preset = cinema | bigger | smaller | farther | closer | reset (IDE-e587a1). */
+data class ScreenPreset(val preset: String) : BridgeMessage
+
 /** 0.3.0: every panel id the bridge knows; the app removes any other panel (orphan sweeper). */
 data class Sync(val ids: Set<String>) : BridgeMessage
 
@@ -194,6 +197,7 @@ object Protocol {
             )
           }
           "recenter" -> Recenter
+          "screen_preset" -> ScreenPreset(o.optString("preset"))
           "sync" -> Sync(o.optJSONArray("ids")?.strings()?.toSet() ?: emptySet())
           "voice_state" ->
               VoiceState(

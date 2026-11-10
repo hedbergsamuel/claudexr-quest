@@ -2,7 +2,7 @@
 // Template data shapes and usage guidance live in the xr-presenter skill (loaded only when needed).
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { CommandResult, HubCommand, LAYOUT_MODES, ROLES, SIZES, XrStatus } from "./protocol.js";
+import { CommandResult, HubCommand, LAYOUT_MODES, SCREEN_PRESETS, ROLES, SIZES, XrStatus } from "./protocol.js";
 import { XrBackend } from "./backend.js";
 import { TEMPLATES, Template, renderTemplate, renderText } from "./present.js";
 import { BugStore, COMPONENTS, SEVERITIES } from "./devmode.js";
@@ -194,9 +194,10 @@ export function registerTools(server: McpServer, backend: XrBackend, opts: { dev
   server.registerTool(
     "xr_panel",
     {
-      description: "Manage panels: list | update (title/body/role/size/move m rel. to user) | close (id = panel or stream id | role | \"all\" = everything incl. ALL streams, display too, restores brightness) | layout (review|focus|present|tidy).",
+      description: "Manage panels: list | update (title/body/role/size/move m rel. to user) | close (id = panel or stream id | role | \"all\" = everything incl. ALL streams, display too, restores brightness) | layout (review|focus|present|tidy) | screen (preset cinema|bigger|smaller|farther|closer|reset = Mac screen as a big cinema screen straight ahead; never guess units). NOTE: move is ABSOLUTE metres from the user (forward 1.5 = 1.5 m in front), size is panel width/height in metres.",
       inputSchema: {
-        action: z.enum(["list", "update", "close", "layout"]),
+        action: z.enum(["list", "update", "close", "layout", "screen"]),
+        preset: z.enum(SCREEN_PRESETS).optional(),
         id: z.string().optional(),
         role,
         title: z.string().optional(),
@@ -212,6 +213,10 @@ export function registerTools(server: McpServer, backend: XrBackend, opts: { dev
       if (a.action === "layout") {
         const r = await run({ op: "layout", mode: a.mode ?? "review" });
         return fail(r) ?? say(`Layout ${a.mode ?? "review"}; minimized ${(r.data?.minimized as string[])?.length ?? 0}`);
+      }
+      if (a.action === "screen") {
+        const r = await run({ op: "screen", preset: a.preset ?? "cinema" });
+        return fail(r) ?? say(`Mac screen: ${a.preset ?? "cinema"}`);
       }
       if (a.action === "close") {
         const r = await run({ op: "clear", id: a.id, role: a.role });

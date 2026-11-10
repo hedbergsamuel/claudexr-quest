@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { VoiceConfig } from "./voice.js";
+import { pickWhisperModel, type VoiceConfig } from "./voice.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /** Root of the "Meta XR" folder (bridge/dist/src -> bridge/src -> root). */
@@ -141,13 +141,17 @@ export function loadConfig(): XrConfig {
     voice: {
       engine: (process.env.CLAUDEXR_STT_ENGINE as VoiceConfig["engine"]) || raw.voice?.engine || "whisper-cpp",
       whisperBin: resolveBin(process.env.CLAUDEXR_WHISPER_BIN || raw.voice?.whisperBin || "whisper-cli"), // brew install whisper-cpp
-      whisperModel: expandHome(process.env.CLAUDEXR_WHISPER_MODEL || raw.voice?.whisperModel || path.join(stateDir(), "models", "ggml-base.bin")),
+      // 0.4.0: without an explicit choice, the best model found in <state>/models (Swedish-tuned or larger before base).
+      whisperModel: expandHome(process.env.CLAUDEXR_WHISPER_MODEL || raw.voice?.whisperModel || pickWhisperModel(path.join(stateDir(), "models")) || path.join(stateDir(), "models", "ggml-base.bin")),
       command: process.env.CLAUDEXR_STT_COMMAND || raw.voice?.command,
       autoSendMs: Number(process.env.CLAUDEXR_VOICE_AUTOSEND_MS ?? raw.voice?.autoSendMs ?? 0),
       maxSeconds: raw.voice?.maxSeconds ?? 30,
       timeoutMs: Number(process.env.CLAUDEXR_VOICE_TIMEOUT_MS ?? raw.voice?.timeoutMs ?? 25_000),
       fast: raw.voice?.fast ?? true,
-      language: raw.voice?.language ?? "auto",
+      // 0.4.0: "sv" by default. "auto" guessed wrong on short clips ("Macen syns" -> "Ja, maken sings"); set "auto" or "en" in config.json if you speak English.
+      language: process.env.CLAUDEXR_VOICE_LANGUAGE || raw.voice?.language || "sv",
+      vocabulary: raw.voice?.vocabulary,
+      corrections: raw.voice?.corrections,
       previewTimeoutMs: raw.voice?.previewTimeoutMs ?? 120_000,
     },
     xrPermissions: process.env.CLAUDEXR_XR_PERMISSIONS ? process.env.CLAUDEXR_XR_PERMISSIONS !== "0" : raw.xrPermissions ?? true,

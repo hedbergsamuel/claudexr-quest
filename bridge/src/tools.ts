@@ -43,6 +43,7 @@ export function statusLine(s: XrStatus | null): string {
   const d = s.display;
   const extra = d ? [`display: ${d.alwaysOn ? "always on" : "manual"}${d.suppressed ? " (stopped; restarts on reconnect/xr_stream display)" : ""}${d.dimEnabled ? `, dimming ${d.dimmed ? "ACTIVE" : "off now"}` : ""}; mic ${s.mic?.listening ? "listening" : "idle"}`] : [];
   if (s.helperMode && s.helperMode !== "shared") extra.push(`helper: ${s.helperMode}`);
+  if (s.voice) extra.push(`voice: next spoken message goes ${{ channel: "to the voice channel", rewake: "to Claude at once (wakes the idle session)", working: "to Claude at the next tool step", queued: "with the next prompt (no session is working or waiting)" }[s.voice.route]}${s.voice.queued ? `, ${s.voice.queued} waiting` : ""}`);
   return [`XR connected: ${s.device} (app ${s.appVersion ?? "?"}), layout ${s.layoutMode}, ${s.openPanels.length} panel(s)`, ...panels, ...streams, ...extra].join("\n");
 }
 

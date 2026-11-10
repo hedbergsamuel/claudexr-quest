@@ -21,11 +21,16 @@ import { flagDir } from "./flag.js";
 
 const DEFAULT_LOCAL_PORT = DEFAULT_PORT + 1; // 47801
 
-export type HookName = "context" | "activity" | "permission";
+export type HookName = "context" | "activity" | "permission" | "voicewait";
+/** How long the background voice waiter lives after a turn (then spoken messages wait for the next prompt again). */
+export const VOICEWAIT_TIMEOUT_S = 3600;
+
 export interface HookSpec {
   event: string;
   name: HookName;
   timeout: number;
+  /** 0.4.0: background hook that wakes the model when it exits with code 2 (Claude Code `asyncRewake`) */
+  asyncRewake?: boolean;
 }
 
 /** The 11 ClaudeXR hooks (event -> bridge route), same mapping as print-config had in 0.3.0. */
@@ -41,6 +46,8 @@ export const HOOK_SPECS: HookSpec[] = [
   { event: "Stop", name: "activity", timeout: 2 },
   { event: "TaskCreated", name: "activity", timeout: 2 },
   { event: "TaskCompleted", name: "activity", timeout: 2 },
+  // 0.4.0 (BUG-6b9a81): waits in the background after a turn; a spoken message wakes the idle session at once.
+  { event: "Stop", name: "voicewait", timeout: VOICEWAIT_TIMEOUT_S, asyncRewake: true },
 ];
 
 export interface HookTargets {
@@ -79,6 +86,17 @@ export function hookUrl(t: HookTargets, name: HookName): string {
 /** The gated command for one hook (see header). */
 export function gatedCommand(t: HookTargets, name: HookName, timeoutS: number): string {
   const m = Math.max(1, Math.floor(timeoutS) - 1);
+  if (name === "voicewait") {
+    // Long poll. Output (the framed spoken message) goes to stderr with exit code 2: that is what wakes the model.
+    // Empty answer (new prompt, timeout, daemon gone) = exit 0 = nothing happens.
+    return (
+      `[ -f "${t.flagPath}" ] || exit 0; ` +
+      `m=$(curl -sf -m ${Math.max(1, Math.floor(timeoutS) - 10)} -X POST ${hookUrl(t, name)} ` +
+      `-H "Authorization: Bearer $(cat "${t.tokenPath}" 2>/dev/null)" ` +
+      `-H "Content-Type: application/json" --data-binary @-) || exit 0; ` +
+      `[ -n "$m" ] || exit 0; printf '%s\\n' "$m" >&2; exit 2`
+    );
+  }
   return (
     `[ -f "${t.flagPath}" ] || exit 0; ` +
     `curl -sf -m ${m} -X POST ${hookUrl(t, name)} ` +
@@ -90,8 +108,8 @@ export function gatedCommand(t: HookTargets, name: HookName, timeoutS: number): 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
 
-const URL_RE = /^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)\/hook\/(context|activity|permission)\/?$/;
-const CMD_RE = /\bcurl\b[^\n]*127\.0\.0\.1:(\d+)\/hook\/(context|activity|permission)\b/;
+const URL_RE = /^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)\/hook\/(context|activity|permission|voicewait)\/?$/;
+const CMD_RE = /\bcurl\b[^\n]*127\.0\.0\.1:(\d+)\/hook\/(context|activity|permission|voicewait)\b/;
 
 /**
  * Is this one of ours (an old ungated http hook, or a gated command from this or the earlier temp script)?
@@ -122,7 +140,8 @@ function canonical(t: HookTargets, event: string, name: HookName, old?: Json): J
   const to = old && typeof old.timeout === "number" && old.timeout > 0 ? old.timeout : defaultTimeout(event, name);
   const extra: Json = {};
   if (old) for (const [k, v] of Object.entries(old)) if (!["type", "command", "timeout", "url", "headers", "allowedEnvVars"].includes(k)) extra[k] = v;
-  return { type: "command", command: gatedCommand(t, name, to), timeout: to, ...extra };
+  const spec = HOOK_SPECS.find((s) => s.event === event && s.name === name);
+  return { type: "command", command: gatedCommand(t, name, to), timeout: to, ...extra, ...(spec?.asyncRewake ? { asyncRewake: true } : {}) };
 }
 
 /**

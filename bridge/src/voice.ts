@@ -28,6 +28,57 @@ export interface VoiceConfig {
   language: string;
   /** how long the previewed transcript waits for Skicka/Avbryt */
   previewTimeoutMs: number;
+  /**
+   * 0.4.0: words whisper should expect (passed as its initial prompt). Short Swedish clips such as "Macen syns" were
+   * heard as "Ja, maken sings": the base model had no context. "" turns it off. Default: DEFAULT_VOCABULARY.
+   */
+  vocabulary?: string;
+  /** 0.4.0: whole-word replacements applied to the transcript before the preview (lower-case key -> replacement). */
+  corrections?: Record<string, string>;
+}
+
+/** Context for whisper: the words this user actually says to ClaudeXR. Kept short (it costs decoding time). */
+export const DEFAULT_VOCABULARY =
+  "Samtal på svenska med Claude om Macen, Macens skärm, headsetet, paneler, panelen, strömmen, fönstret, bioskärm, Notion, Spotify, Terminal, Claude Code, kalibrera, centrera, stäng alla paneler.";
+
+/** Known mishearings of product words. The user always sees the result in the preview before it is sent. */
+export const DEFAULT_CORRECTIONS: Record<string, string> = {
+  maken: "Macen",
+  macken: "Macen",
+  mäcken: "Macen",
+  makens: "Macens",
+  mackens: "Macens",
+  mäckens: "Macens",
+  klåd: "Claude",
+  klod: "Claude",
+  claud: "Claude",
+};
+
+/** Whole-word, case-insensitive replacement (Unicode letters count as word characters). */
+export function correctTerms(text: string, corrections: Record<string, string> = DEFAULT_CORRECTIONS): string {
+  const keys = Object.keys(corrections).filter((k) => k.trim());
+  if (!keys.length) return text;
+  return text.replace(/[\p{L}\p{N}]+/gu, (w) => corrections[w.toLowerCase()] ?? w);
+}
+
+/**
+ * 0.4.0: the best whisper model that is actually on disk. `ggml-base.bin` (the 0.3 default) is weak on Swedish;
+ * a Swedish-tuned (KB-Whisper) or larger model is used automatically when the user has put one in the models folder.
+ */
+export const MODEL_PREFERENCE = [/kb[-_]?whisper.*large/i, /large-v3-turbo/i, /kb[-_]?whisper.*medium/i, /large/i, /kb[-_]?whisper.*small/i, /medium/i, /kb[-_]?whisper/i, /small/i, /base/i, /tiny/i];
+
+export function pickWhisperModel(dir: string): string | undefined {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => /^ggml-.*\.bin$/.test(f) && !/\.en\.bin$/.test(f));
+  } catch {
+    return undefined;
+  }
+  for (const re of MODEL_PREFERENCE) {
+    const hit = files.filter((f) => re.test(f)).sort()[0];
+    if (hit) return path.join(dir, hit);
+  }
+  return files.sort()[0] ? path.join(dir, files.sort()[0]) : undefined;
 }
 
 export const SAMPLE_RATE = 16_000;
@@ -66,6 +117,8 @@ export function transcribe(cfg: VoiceConfig, captureBin: string, wavPath: string
     // fast: -bs 1 (greedy) and -nf (no temperature fallback; on noise the fallback retried up to 6 times).
     args = ["-m", cfg.whisperModel, "-f", wavPath, "-l", cfg.language || "auto", "-nt", "-np", "-t", String(Math.max(2, Math.min(8, os.availableParallelism?.() ?? 4)))];
     if (cfg.fast) args.push("-bs", "1", "-nf");
+    const vocab = cfg.vocabulary ?? DEFAULT_VOCABULARY;
+    if (vocab.trim()) args.push("--prompt", vocab.trim().slice(0, 600));
   }
   return new Promise((resolve, reject) =>
     execFile(bin, args, { timeout: cfg.timeoutMs > 0 ? cfg.timeoutMs : 25_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (err, stdout) => {
@@ -172,10 +225,93 @@ const COMMANDS: Record<LocalCommand, string[]> = {
   pause_streams: ["pausa strömmen", "pausa strömning", "pausa strömningen", "stoppa strömmen", "stoppa strömning", "pause stream", "pause the stream", "pause streaming", "stop stream", "stop streaming"],
 };
 
-export function matchLocalCommand(text: string): LocalCommand | null {
+// 0.4.0: tolerant matching. Still whole utterances only, and still only the harmless local commands above.
+const FILLER_START = /^(?:(?:ja|jo|okej|ok|eh|öh|äh|hm|och|så|men|du|snälla|kan du|kan ni|vill du|var snäll och) )+/;
+const FILLER_END = /(?: (?:tack|nu|snälla|är du snäll|please))+$/;
+const wordFix = (alts: string, to: string): [RegExp, string] => [new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts})(?![\\p{L}\\p{N}])`, "gu"), to];
+const WORD_FIXES: [RegExp, string][] = [
+  wordFix("maken|macken|mäcken|mackan|mac en", "macen"),
+  wordFix("makens|mackens|mäckens", "macens"),
+  wordFix("bio skärmen|bio skärm|bioskärmar|bio skär", "bioskärm"),
+  wordFix("skärm en|skärmarna|skärmar", "skärmen"),
+  wordFix("panelerna|panelen|panel", "paneler"),
+  wordFix("centrerar", "centrera"),
+  wordFix("åter ställ|återställa|återställer", "återställ"),
+  wordFix("stänga|stänger|stängd", "stäng"),
+];
+const fold = (s: string) => s.replace(/[åä]/g, "a").replace(/ö/g, "o").replace(/é/g, "e");
+
+/** Optimal string alignment distance (insert, delete, substitute, swap of neighbours), capped at `max` + 1. */
+export function editDistance(a: string, b: string, max = 3): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev2: number[] = [];
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1);
+      cur.push(v);
+      if (v < best) best = v;
+    }
+    if (best > max) return max + 1;
+    prev2 = prev;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+export interface CommandMatch {
+  cmd: LocalCommand;
+  /** the canonical phrase that was understood (shown to the user, so a fuzzy match is never silent) */
+  phrase: string;
+  exact: boolean;
+}
+
+/**
+ * Which local command an utterance is, if any. Three steps, each on the WHOLE utterance:
+ * 1. exact phrase; 2. after removing filler words ("ja", "okej", "tack") and fixing known mishearings
+ * ("maken" -> "macen", "bio skärm" -> "bioskärm"); 3. small spelling distance (1 for phrases up to 9 letters, else 2),
+ * compared without å/ä/ö accents, phrases of 6+ letters only, and only when exactly one command is that close.
+ */
+export function matchCommand(text: string): CommandMatch | null {
+  const entries = Object.entries(COMMANDS) as [LocalCommand, string[]][];
+  const exact = (n: string): CommandMatch | null => {
+    for (const [cmd, phrases] of entries) if (phrases.includes(n)) return { cmd, phrase: n, exact: true };
+    return null;
+  };
   const n = normalize(text);
-  for (const [cmd, phrases] of Object.entries(COMMANDS) as [LocalCommand, string[]][]) if (phrases.includes(n)) return cmd;
-  return null;
+  if (!n) return null;
+  const direct = exact(n);
+  if (direct) return direct;
+  let c = n.replace(FILLER_START, "").replace(FILLER_END, "").trim();
+  for (const [re, to] of WORD_FIXES) c = c.replace(re, to);
+  c = c.replace(/\s+/g, " ").trim();
+  if (!c) return null;
+  const cleaned = exact(c);
+  if (cleaned) return { ...cleaned, exact: false };
+  const fc = fold(c);
+  let best: { cmd: LocalCommand; phrase: string; d: number } | null = null;
+  let tie = false;
+  for (const [cmd, phrases] of entries) {
+    for (const p of phrases) {
+      if (p.length < 6) continue;
+      const max = p.length <= 9 ? 1 : 2;
+      const d = editDistance(fc, fold(p), max);
+      if (d > max) continue;
+      if (!best || d < best.d) {
+        best = { cmd, phrase: p, d };
+        tie = false;
+      } else if (d === best.d && cmd !== best.cmd) tie = true;
+    }
+  }
+  return best && !tie ? { cmd: best.cmd, phrase: best.phrase, exact: false } : null;
+}
+
+export function matchLocalCommand(text: string): LocalCommand | null {
+  return matchCommand(text)?.cmd ?? null;
 }
 
 const ORDINALS: string[][] = [
@@ -242,6 +378,14 @@ export class VoiceInbox {
   /** Channel consumer: returns and removes everything pending. Marks the channel as alive. */
   take(): InboxMessage[] {
     this.lastChannelPoll = this.now();
+    this.prune();
+    const out = this.items;
+    this.items = [];
+    return out;
+  }
+
+  /** Hook paths of the VoiceRouter (PostToolUse / Stop / rewake): everything pending, without touching the channel state. */
+  drain(): InboxMessage[] {
     this.prune();
     const out = this.items;
     this.items = [];

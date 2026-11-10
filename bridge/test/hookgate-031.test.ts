@@ -88,12 +88,13 @@ test("planSettings: replaces the 11 ungated http hooks, keeps everything else, a
   assert.equal(JSON.stringify(input), before, "input not modified");
   assert.ok(changed);
   const xr = allXrHooks(settings);
-  assert.equal(xr.length, 11);
+  assert.equal(xr.length, 12);
+  assert.equal(stats.added, 1, "0.4.0: the voicewait Stop hook is new");
   assert.equal(stats.converted, 11);
   for (const s of HOOK_SPECS) assert.ok(xr.some((x) => x.event === s.event && x.name === s.name), `${s.event}/${s.name}`);
   for (const x of xr) {
     assert.equal(x.h.type, "command");
-    assert.ok(x.h.command.startsWith('[ -f "$HOME/.claudexr/on" ] || exit 0; curl -sf -m '));
+    assert.ok(x.h.command.startsWith(x.name === "voicewait" ? '[ -f "$HOME/.claudexr/on" ] || exit 0; m=$(curl -sf -m ' : '[ -f "$HOME/.claudexr/on" ] || exit 0; curl -sf -m '));
     assert.equal(x.h.headers, undefined);
     assert.equal(x.h.url, undefined);
     assert.equal(x.h.allowedEnvVars, undefined);
@@ -115,8 +116,8 @@ test("planSettings: idempotent (second pass changes nothing), also from an empty
   assert.equal(twice.changed, false);
   assert.equal(JSON.stringify(twice.settings), JSON.stringify(once));
   const fresh = planSettings({}, TH);
-  assert.equal(allXrHooks(fresh.settings).length, 11);
-  assert.equal(fresh.stats.added, 11);
+  assert.equal(allXrHooks(fresh.settings).length, 12);
+  assert.equal(fresh.stats.added, 12);
   assert.equal(planSettings(fresh.settings, TH).changed, false);
   // UserPromptSubmit holds exactly two (context + activity) in one group
   assert.equal((fresh.settings as any).hooks.UserPromptSubmit[0].hooks.length, 2);
@@ -137,7 +138,7 @@ test("planSettings: replaces the earlier $CLAUDEXR_TOKEN gate script's commands,
   assert.equal((r.settings as any).hooks.Stop[0].hooks.length, 1);
   assert.ok(!JSON.stringify(r.settings.hooks).includes("CLAUDEXR_TOKEN"));
   assert.equal((r.settings as any).hooks.SessionStart[0].hooks[0].command.includes("xr-context.mjs"), true, "shim untouched");
-  assert.equal(allXrHooks(r.settings).length, 11);
+  assert.equal(allXrHooks(r.settings).length, 12);
 });
 
 test("planSettings: another tool's hook on another port is never claimed or repointed, even on a ClaudeXR route name", () => {
@@ -150,7 +151,7 @@ test("planSettings: another tool's hook on another port is never claimed or repo
   assert.deepEqual((r.settings as any).hooks.SessionStart[0].hooks, foreign, "left byte-identical");
   assert.deepEqual((r.settings as any).hooks.Stop[0], input.hooks.Stop[0]);
   assert.equal(allXrHooks(r.settings).filter((x) => JSON.stringify(x.h).includes(":9999")).length, 3, "the foreign ones are still there, untouched");
-  assert.equal(allXrHooks(r.settings).filter((x) => x.h.type === "command" && x.h.command.includes(":48999/hook/")).length, 11, "ClaudeXR's own 11 were added next to them");
+  assert.equal(allXrHooks(r.settings).filter((x) => x.h.type === "command" && x.h.command.includes(":48999/hook/")).length, 12, "ClaudeXR's own 12 were added next to them");
   // and a hook on the default port 47801 is still migrated when the target port differs
   const mig = planSettings({ hooks: { Stop: [{ hooks: [httpHook("activity", 2)] }] } }, TH);
   assert.equal(mig.stats.converted, 1);
@@ -210,7 +211,7 @@ test("install-hooks writes (backup first, 0600, same content), is idempotent and
   const after = fs.readFileSync(h.file, "utf8");
   assert.ok(after.endsWith("\n"));
   const parsed = JSON.parse(after);
-  assert.equal(allXrHooks(parsed).length, 11);
+  assert.equal(allXrHooks(parsed).length, 12);
   assert.ok(!after.includes("CLAUDEXR_TOKEN"));
   assert.ok(!/Bearer [A-Za-z0-9_-]{16,}/.test(r1.stdout), "nothing token-like printed");
   assert.match(r1.stdout, /Ångra: cp /);
@@ -237,7 +238,7 @@ test("install-hooks: invalid JSON is left alone; a symlinked settings.json stays
   const r2 = cli(["install-hooks"], { HOME: h.home });
   assert.equal(r2.status, 0, r2.stdout + r2.stderr);
   assert.ok(fs.lstatSync(h.file).isSymbolicLink());
-  assert.equal(allXrHooks(JSON.parse(fs.readFileSync(real, "utf8"))).length, 11);
+  assert.equal(allXrHooks(JSON.parse(fs.readFileSync(real, "utf8"))).length, 12);
   assert.equal(fs.statSync(path.join(h.home, ".claudexr", "local-token")).mode & 0o777, 0o600);
   assert.ok(!r2.stdout.includes(FAKE_TOKEN));
 });
@@ -252,7 +253,7 @@ test("print-config prints gated command hooks (no http hooks, no token, no CLAUD
     assert.ok(!out.includes("CLAUDEXR_TOKEN"));
     assert.match(out, /install-hooks/);
     const block = JSON.parse(out.slice(out.indexOf('{\n  "hooks"')));
-    assert.equal(allXrHooks(block).length, 11);
+    assert.equal(allXrHooks(block).length, 12);
     assert.ok(allXrHooks(block).every((x) => x.h.type === "command" && x.h.command.includes("local-token")));
   } finally {
     d.proc.kill("SIGTERM");
@@ -420,11 +421,15 @@ test("daemon: a second instance on the same ports exits 3 and leaves a live flag
 test("daemon: the generated hook command works end to end against the isolated daemon (token from its token file)", async () => {
   const dir = tmpDir();
   const b = await startBridge(nextPort(), {}, dir);
-  const home = tmpDir("claudexr-home-");
+  // The real HOME on purpose: defaultTargets() writes paths below the home directory as "$HOME/...", so a fake HOME
+  // made this test fail whenever TMPDIR itself lies below the home directory (as in the 0.4.0 night runs).
+  // The hook only reads the flag and the token of the isolated daemon; nothing is written.
+  const home = os.homedir();
   const t = defaultTargets({ port: b.port + 1, flagDir: path.join(dir, "flag"), stateDir: dir });
-  assert.ok(path.isAbsolute(t.tokenPath) && t.tokenPath.endsWith("local-token"));
   const sim = await startSim(b);
   try {
+    // (inside the try: a failure before it left the daemon running and made the whole test run hang)
+    assert.ok((path.isAbsolute(t.tokenPath) || t.tokenPath.startsWith("$HOME/")) && t.tokenPath.endsWith("local-token"));
     await waitFor(() => fs.existsSync(flagOf(dir)), 4000);
     const r = await runHook(home, gatedCommand(t, "context", 3), JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1" }));
     assert.equal(r.status, 0, r.stderr);

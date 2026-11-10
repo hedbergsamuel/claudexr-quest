@@ -39,7 +39,8 @@ import { XrFlag } from "./flag.js";
 import { CaffeinateAdapter, KeepAwake, type KeepAwakeAdapter } from "./keepawake.js";
 import { BrightnessGuard, HelperBrightnessAdapter, realDimAllowed } from "./brightness.js";
 import { VideoFlow } from "./videoflow.js";
-import { matchAB, matchLocalCommand, matchOption, matchVerdict, transcribePcm, LocalCommand, SAMPLE_RATE, VoiceInbox } from "./voice.js";
+import { correctTerms, matchAB, matchCommand, matchOption, matchVerdict, transcribePcm, LocalCommand, SAMPLE_RATE, VoiceInbox } from "./voice.js";
+import { VoiceRouter } from "./voiceroute.js";
 import { BugStore, Component } from "./devmode.js";
 import { maskSecrets } from "./mask.js";
 import { renderText } from "./present.js";
@@ -147,6 +148,10 @@ export class XrHub {
   private voiceDecisions = new Map<string, (send: boolean) => void>();
   private sttQueue: Promise<void> = Promise.resolve();
   readonly voiceInbox = new VoiceInbox();
+  /** 0.4.0 (BUG-6b9a81): delivers spoken messages into the running session through hooks (see voiceroute.ts). */
+  readonly voiceRouter = new VoiceRouter(this.voiceInbox, Date.now, (n, via) => {
+    if (via !== "prompt") this.toast(n > 1 ? `✓ Claude fick ${n} röstmeddelanden` : "✓ Claude fick röstmeddelandet", "done");
+  });
   readonly brightness?: BrightnessGuard;
   private readonly keepAwake: KeepAwake;
   private displaySuppressed = false;
@@ -288,6 +293,7 @@ export class XrHub {
   }
 
   async close(): Promise<void> {
+    this.voiceRouter.cancelAll();
     clearInterval(this.heartbeat);
     clearTimeout(this.dimCheckTimer);
     this.keepAwake.set(false);
@@ -354,6 +360,7 @@ export class XrHub {
         dimEnabled: !!this.brightness,
       },
       mic: { listening: this.voice.size > 0 },
+      voice: this.voiceRouter.info(),
       helperMode: this.streams.helperMode(),
       streams: [...this.streams.streams.values()].map((s) => ({
         streamId: s.streamId,
@@ -1122,11 +1129,14 @@ export class XrHub {
     log(`voice: transcribed ${v.bytes} bytes (${(v.bytes / (SAMPLE_RATE * 2)).toFixed(1)} s) in ${Date.now() - t0} ms`);
     if (!text) return this.voiceState(id, "error", { detail: "Jag hörde inget" });
     // (c) fixed local commands, no model, no tokens. Only when not answering a specific card.
-    const cmd = v.target === undefined ? matchLocalCommand(text) : null;
+    const cmd = v.target === undefined ? matchCommand(text) : null;
     if (cmd) {
-      this.runLocalCommand(cmd);
-      return this.voiceState(id, "sent", { text, detail: "Kommando utfört" });
+      this.runLocalCommand(cmd.cmd);
+      // A tolerant match is never silent: the user sees which command was understood.
+      return this.voiceState(id, "sent", { text, detail: cmd.exact ? "Kommando utfört" : `Kommando utfört: ${cmd.phrase}` });
     }
+    // Known mishearings of product words ("maken" -> "Macen"); the user sees the result in the preview.
+    text = correctTerms(text, this.o.config.voice.corrections);
     // Preview with Skicka / Avbryt in the voice panel (no second "Jag hörde" card that could collide with it).
     const autoMs = this.o.config.voice.autoSendMs;
     const dest = this.voiceDestination(v.target);
@@ -1155,9 +1165,12 @@ export class XrHub {
       return this.voiceState(id, "sent", { text, detail: `Svarade på: ${title}` });
     }
     // No question waits: the message goes to the chat (voice channel if it is running, otherwise next prompt).
-    this.voiceInbox.add(text);
-    if (this.voiceInbox.channelAlive()) return this.voiceState(id, "sent", { text, detail: "Skickat till chatten (röstkanalen)" });
-    this.voiceState(id, "queued", { text, detail: "Köat: Claude får det vid din nästa prompt (eller när Claude ställer en fråga). Starta röstkanalen för direkt leverans." });
+    const { route } = this.voiceRouter.add(text);
+    log(`voice: message routed via ${route}`);
+    if (route === "channel") return this.voiceState(id, "sent", { text, detail: "Skickat till chatten (röstkanalen)" });
+    if (route === "rewake") return this.voiceState(id, "sent", { text, detail: "Claude väcks och får meddelandet nu" });
+    if (route === "working") return this.voiceState(id, "sent", { text, detail: "Claude arbetar och får det vid nästa steg (några sekunder)" });
+    this.voiceState(id, "queued", { text, detail: "Claude är inte igång just nu. Meddelandet följer med din nästa prompt i terminalen (sparas i 10 min)." });
   }
 
   private runLocalCommand(cmd: LocalCommand) {
@@ -1503,10 +1516,13 @@ export class XrHub {
     try {
       switch (name) {
         case "context":
-          return this.contextHook.handle(input, this.status(), this.voiceInbox.takeForHook().map((m) => m.text));
+          this.voiceRouter.note(input);
+          return this.contextHook.handle(input, this.status(), this.voiceRouter.forPrompt());
         case "activity":
+          this.voiceRouter.note(input);
           await this.execute({ op: "event", event: trimEvent(input) });
-          return {};
+          // 0.4.0: a spoken message that waits is handed to the working session here (PostToolUse / Stop).
+          return this.voiceRouter.forHook(input);
         case "permission": {
           // FAIL-CLOSED: a decision is returned only for an explicit tap in the paired headset.
           if (input.hook_event_name && input.hook_event_name !== "PermissionRequest") return {};
@@ -1573,6 +1589,13 @@ export class XrHub {
         try {
           const parsed = JSON.parse(body);
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json(400, { error: "JSON object required" });
+          if (path === "/hook/voicewait") {
+            // Long poll for the asyncRewake Stop hook: plain text (the hook prints it and exits 2), 204 = nothing.
+            const text = await this.voiceRouter.wait(parsed, ac.signal);
+            if (res.writableEnded || res.destroyed) return;
+            res.writeHead(text ? 200 : 204, { "content-type": "text/plain; charset=utf-8" });
+            return void res.end(text);
+          }
           if (path.startsWith("/hook/")) return json(200, await this.hook(path.slice(6), parsed, ac.signal));
           const cmd: HubCommand = path === "/event" ? { op: "event", event: parsed } : parsed;
           json(200, await this.execute(cmd, ac.signal));

@@ -120,9 +120,9 @@ test("video flow control: no acks -> at most MAX_IN_FLIGHT (3) frames in flight,
     const st = (await b.local("/status")).streams[0];
     assert.ok(st.dropped > 20, `dropped ${st.dropped}`);
     const fl = fs.readFileSync(log, "utf8");
-    assert.match(fl, /\["stdin","K"\]/, "IDR requested from the encoder");
-    assert.match(fl, /\["stdin","B \d+"\]/, "bitrate adapted");
-    assert.match(fl, /"--max-width","1446"/, "stream sized to the panel (0.9 m at 1.1 m), not full screen");
+    assert.match(fl, /\["stdin","K"\]|\\"cmd\\":\\"key\\"/, "IDR requested from the encoder");
+    assert.match(fl, /\["stdin","B \d+"\]|\\"cmd\\":\\"bitrate\\"/, "bitrate adapted");
+    assert.match(fl, /"--max-width","1446"|\\"maxWidth\\":1446/, "stream sized to the panel (0.9 m at 1.1 m), not full screen");
   } finally {
     sim.close();
     await b.close();

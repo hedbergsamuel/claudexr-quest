@@ -3,7 +3,8 @@
 Uppdateras löpande. Nästa körning: läs den här filen och `git log --oneline`, fortsätt där det står "Nästa steg".
 
 ## Läge just nu
-- **Fas 1 pågår** (punkt 1–3: flera strömmar, panelplacering, röst och stabila id). Startad 2026-11-10 00:00.
+- **Fas 2 klar 2026-11-10 ~04:45.** Slutrapport: `bugs/CHANGELOG-0.4.0.md`. Ej klart och varför: `bugs/PLAN-0.4-EJ-KLART.md`.
+- Fas 2 gjorde: punkt 2 committad, 4 (håll vaken, close all lämnar skärmen, stale), 5 (stäng utom skärmen, bioskärm), 6 (bara input.ts), 10 (kalibreringsfel), versionshöjning, README/SKILL.
 - Inget är installerat, inget är testat i headsetet, Mac-hjälparen är byggd men aldrig körd.
 
 ## Punkt 1: flera samtidiga fönsterströmmar: KLAR i kod, obevisad på riktig Mac
@@ -56,7 +57,7 @@ varför macOS gör så. Det går inte att avgöra utan att köra hjälparen. Lö
 - BUG-552260 (blank Notion-ruta trots "Streaming") rapporterades på 0.2.0; 0.3.0 väntar redan på första bildrutan
   innan den svarar "Streaming". Trolig följd av samma -3805. Obekräftat.
 
-## Punkt 2: panelplacering: PÅGÅR
+## Punkt 2: panelplacering: KLAR i kod (PlacementPlanner), obevisad i headset
 ## Punkt 3: röstleverans: EJ PÅBÖRJAD
 
 ## Till fas 2 (mekaniskt arbete, lämnat med flit)

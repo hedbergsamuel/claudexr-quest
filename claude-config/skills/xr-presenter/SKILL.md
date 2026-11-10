@@ -26,7 +26,7 @@ Användaren bär headsetet och ser paneler i rummet. Skärmen och terminalen syn
 | Längre genomgång | `xr_present slides` |
 | Status/checklista | `xr_present checklist`; tabelldata `table` |
 | Webbapp under utveckling | `xr_show type:url frame:phone|tablet|laptop` (localhost går bra; starta dev-servern med `--host`) |
-| Se ett Mac-fönster skarpt | `xr_stream action:windows`, sedan `action:window id:N`. Macens skärm strömmas redan automatiskt och ersätts aldrig av fönsterpaneler. `[ask]` = ett tryck på XR-kortet behövs (inte macOS-tillstånd). Stäng allt inkl. strömmar: `xr_panel action:close id:all` |
+| Se ett Mac-fönster skarpt | `xr_stream action:windows`, sedan `action:window id:N`. Macens skärm strömmas redan automatiskt och ersätts aldrig av fönsterpaneler. `[ask]` = ett tryck på XR-kortet behövs (inte macOS-tillstånd). `xr_panel action:close id:all` stänger allt UTOM Macens skärm (den stängs aldrig utan uttrycklig begäran; `id:everything` stänger även den). Fasta panel-id: Macens skärm = `display`, fönster = `win-<fönster-id>`. Bioskärm: `xr_panel action:screen preset:cinema|bigger|smaller|farther|closer|reset` |
 | Uppdatera en befintlig panel | `xr_present id:<panel>` eller `xr_panel action:update` |
 
 ## Datamallar för xr_present (fält med ? är valfria)
@@ -50,4 +50,4 @@ Om ingen mall räcker, utgå från `${CLAUDE_SKILL_DIR}/templates/base.html` (m�
 - Röstkommandona "stäng alla paneler", "centrera", "fokusläge", "visa status" och "pausa strömmen" körs lokalt i bryggan. Du får aldrig se dem.
 
 ## Roller och storlek
-`role`: primary (rakt fram), compare, log (snett vänster), side (snett höger), overlay (över Mac-skärmen). `size`: small | medium | large | wide. Placera aldrig med koordinater, om inte användaren ber om det (`xr_panel move`).
+`role`: primary (rakt fram), compare, log (snett vänster), side (snett höger), overlay (över Mac-skärmen). `size`: small | medium | large | wide. Placera aldrig med koordinater, om inte användaren ber om det (`xr_panel move` = ABSOLUTA meter framför användaren, forward 1,5 = 1,5 m framför; `size` = panelens bredd/höjd i meter). Flytta aldrig Macens skärm med move/size: använd `action:screen`.

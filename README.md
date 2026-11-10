@@ -141,11 +141,16 @@ Tryck på **Kalibrera skärm** i statuspanelen (eller låt Claude köra `xr_stre
 | `xr_test` | "Prova det här" med checklista: funkar eller fel (tryck eller tal) | xr_test |
 | `xr_show` | `url` (live-sida, localhost går bra, enhetsram), `html` (reserv), `text`/`diff`/`log`/`md` | xr_preview, xr_show |
 | `xr_present` | Kompakt JSON → inbyggd mall: dashboard, kpi, comparison, timeline, flow, slides, choice-cards, diff, checklist, table | (nytt) |
-| `xr_panel` | `list`, `update` (titel, innehåll, roll, storlek, flytta), `close`, `layout` (review, focus, present, tidy) | xr_list_panels, xr_update_panel, xr_close_panel, xr_layout, xr_clear |
+| `xr_panel` | `list`, `update` (titel, innehåll, roll, storlek, flytta), `close` (`all` lämnar Macens skärm, `everything` stänger även den), `layout` (review, focus, present, tidy), `screen` (bioskärm: cinema, bigger, smaller, farther, closer, reset) | xr_list_panels, xr_update_panel, xr_close_panel, xr_layout, xr_clear |
 | `xr_stream` | `windows`, `window id`, `display` (omstart ersätter), `stop [id\|display\|all]` (utan id: bara fönsterströmmar), `calibrate` | xr_list_windows, xr_stream_window, xr_stop_stream, xr_calibrate_screen |
 | `xr_dev` (dev-läge) | `bug`, `idea`, `list`, `export` | xr_report_bug, xr_note_improvement, xr_list_reports, xr_export_bug_report |
 
 Det bryggan sköter **utan modellen** (noll tokens): statuspanelen (vad Claude gör, uppgiftslista, senaste steg), aviseringar med ljud när Claude är klar eller väntar, panelen "senaste ändring" (diff) och "testresultat" direkt från hooks, städning (inaktuella paneler minimeras, högst 6 expanderade), layoutlägen, röstkommandon och felloggning i dev-läge.
+
+## 0.4.0 i korthet (obevisat i headset, se bugs/CHANGELOG-0.4.0.md)
+- Mac-hjälparen `serve`: en process för alla strömmar (`helperMode: shared`, rollback `perStream`). Fasta panel-id `display` och `win-<id>`.
+- Panelplacering utan överlapp (PlacementPlanner), frågekort närmast, Macen hålls vaken (`caffeinate`) medan skärmströmmen lever.
+- Röst: "bioskärm", "större skärm", "längre bort", "återställ", "stäng allt utom skärmen". Knapp "Stäng utom skärmen".
 
 ## Röst
 

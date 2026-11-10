@@ -1,4 +1,4 @@
-# claudexr-capture (Mac-hjälparen) 0.3.1
+# claudexr-capture (Mac-hjälparen) 0.4.0
 
 Litet Swift-CLI som ClaudeXR-bryggan startar för skärm-/fönsterspegling, kalibreringsmarkören,
 (valfri) taligenkänning på enheten och ljusstyrka för den inbyggda skärmen.
@@ -9,6 +9,7 @@ Litet Swift-CLI som ClaudeXR-bryggan startar för skärm-/fönsterspegling, kali
     .build/release/claudexr-capture display-info
 
 ## Kommandon
+- `serve` (0.4.0): EN process äger alla strömmar och fönsterlistan; kommandon som JSON-rader på stdin, bildrutor märkta med ström-id på stdout. Bryggan använder den som standard (`helperMode: shared`, rollback `CLAUDEXR_HELPER_MODE=perStream`). Aldrig körd på riktig Mac än.
 - `list-windows`: JSON-lista över fönster (kräver skärminspelningstillstånd).
 - `display-info`: geometri för huvudskärmen (punkter, pixlar, millimeter).
 - `stream --window ID | --display ID [--fps --bitrate --max-width --exclude-bundles]`: H.264 på stdout,

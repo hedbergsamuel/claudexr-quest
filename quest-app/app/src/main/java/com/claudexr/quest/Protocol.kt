@@ -43,7 +43,8 @@ data class TestSpec(val title: String, val instructions: String, val url: String
 
 data class TextSpec(val title: String, val content: String, val format: String) : PanelSpec
 
-data class HtmlSpec(val title: String, val html: String, val size: String) : PanelSpec
+/** [format]: null/"html" = a rendered template or page (its panel grows to fit); "text"/"diff"/"log"/"md" = scrolling text. */
+data class HtmlSpec(val title: String, val html: String, val size: String, val format: String? = null) : PanelSpec
 
 /** Exactly what will run (never masked/clipped by the bridge) plus risk warnings. */
 data class PermissionSpec(
@@ -275,7 +276,7 @@ object Protocol {
         "test" ->
             TestSpec(p.getString("title"), p.getString("instructions"), p.optStringOrNull("url"), p.optJSONArray("checklist")?.strings() ?: emptyList())
         "text" -> TextSpec(p.getString("title"), p.getString("content"), p.optString("format", "text"))
-        "html" -> HtmlSpec(p.optString("title"), p.getString("html"), p.optString("size", "medium"))
+        "html" -> HtmlSpec(p.optString("title"), p.getString("html"), p.optString("size", "medium"), p.optStringOrNull("format"))
         "permission" ->
             PermissionSpec(
                 p.optString("title"),

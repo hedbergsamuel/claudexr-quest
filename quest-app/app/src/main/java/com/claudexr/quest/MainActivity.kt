@@ -120,9 +120,9 @@ class MainActivity : AppSystemActivity() {
                   override fun idr(streamId: String) = connection.requestIdr(streamId)
                 },
             talk = ::pushToTalk,
-        ) {
-          connection.send(it)
-        }
+            send = { connection.send(it) },
+            systemPanels = ::visibleSystemPanels,
+        )
     loadRoomScan()
   }
 
@@ -290,6 +290,15 @@ class MainActivity : AppSystemActivity() {
     if (t.sound) runCatching { tone.startTone(if (t.level == "attention") ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_BEEP2, 180) }
     main.removeCallbacksAndMessages(TOAST_TOKEN)
     main.postAtTime({ toastEntity?.setComponent(Visible(false)) }, TOAST_TOKEN, android.os.SystemClock.uptimeMillis() + 4000)
+  }
+
+  /** System panels that planned panels must not cover (centre, width, height in metres). */
+  private fun visibleSystemPanels(): List<Triple<Vector3, Float, Float>> {
+    val out = ArrayList<Triple<Vector3, Float, Float>>()
+    if (connection.state.value == BridgeConnection.State.CONNECTED && activityShown()) {
+      activityEntity?.tryGetComponent<Transform>()?.transform?.let { out += Triple(it.t, 0.5f, 0.5f) }
+    }
+    return out
   }
 
   // ---- Activity panel visibility (0.3.0: it used to sit idle on the left and could not be closed) ----

@@ -120,18 +120,83 @@ class RoleLayout(
 
   fun toastPose(): Pose = place(toastSlot)
 
-  /** Collapsed panels line up low on the left ("tray"). */
-  fun trayPose(index: Int): Pose = place(Slot(yawDeg = -30f + index * 9f, up = -0.50f, distance = 0.95f))
+  /**
+   * Collapsed panels line up low on the left ("tray"). 0.4.0: starts at -50° and grows to the left, so the tray is
+   * never on top of the Mac screen or the keyboard (it used to start at -30°).
+   */
+  fun trayPose(index: Int): Pose = place(Slot(yawDeg = -50f - index * 9f, up = -0.50f, distance = 0.95f))
 
-  /** Position relative to the user's current head (yaw only), as requested by xr_panel move. */
+  /**
+   * Position relative to the user's current head (yaw only), as requested by xr_panel move: ABSOLUTE metres from the
+   * head (forward 1.5 = 1.5 m in front of the user), not a step from where the panel is now (IDE-ff2330).
+   * 0.4.0: no longer moves the layout origin as a side effect.
+   */
   fun relativePose(right: Float, up: Float, forward: Float): Pose {
-    recenter()
-    val origin = eye ?: Vector3(0f, 1.3f, 0f)
-    val fwd = yawForward ?: Vector3.Forward
-    val r = yawRight ?: Vector3.Right
+    val head = currentHeadPose()
+    var origin = eye ?: Vector3(0f, 1.3f, 0f)
+    var fwd = yawForward ?: Vector3.Forward
+    var r = yawRight ?: Vector3.Right
+    if (head != null) {
+      val f = head.q * Vector3.Forward
+      f.y = 0f
+      val rr = head.q * Vector3.Right
+      rr.y = 0f
+      if (len(f) > 1e-3f && len(rr) > 1e-3f) {
+        origin = Vector3(head.t.x, head.t.y, head.t.z)
+        fwd = f.normalize()
+        r = rr.normalize()
+      }
+    }
     val pos = origin + fwd * forward + r * right
     pos.y = origin.y + up
     return Pose(pos, Quaternion.lookRotation(Vector3(pos.x - origin.x, 0f, pos.z - origin.z)))
+  }
+
+  // ---------------- 0.4.0: planned placement (see PlacementPlanner) ----------------
+
+  /** The workspace the planner works in: where the user's eyes are and which way is "straight ahead". */
+  class Frame(val eye: Vector3, val fwd: Vector3, val right: Vector3)
+
+  /**
+   * With a Mac screen ([macCentre], streamed or calibrated): the eyes are where the head is NOW and straight ahead
+   * is the direction to the Mac screen. That is stable no matter where the user happens to look when a panel opens
+   * (0.3.x used the gaze direction of that moment: "side" was sometimes right, sometimes straight ahead).
+   * Without a Mac screen: the layout origin (first panel / Recenter).
+   */
+  fun frame(macCentre: Vector3?): Frame {
+    val head = currentHeadPose()
+    if (macCentre != null && head != null) {
+      val f = Vector3(macCentre.x - head.t.x, 0f, macCentre.z - head.t.z)
+      val hf = head.q * Vector3.Forward
+      hf.y = 0f
+      val hr = head.q * Vector3.Right
+      hr.y = 0f
+      if (len(f) > 0.15f && len(hf) > 1e-3f && len(hr) > 1e-3f) {
+        val fwd = f.normalize()
+        // "Right" = forward turned a quarter turn, the same way the head's right is turned from the head's forward
+        // (taken from the head pose, so it does not depend on the coordinate convention).
+        val sign = if (hf.z * hr.x - hf.x * hr.z >= 0f) 1f else -1f
+        return Frame(Vector3(head.t.x, head.t.y, head.t.z), fwd, Vector3(fwd.z * sign, 0f, -fwd.x * sign))
+      }
+    }
+    if (eye == null) recenter()
+    return Frame(eye ?: Vector3(0f, 1.3f, 0f), yawForward ?: Vector3.Forward, yawRight ?: Vector3.Right)
+  }
+
+  /** Field-of-view rectangle of a panel (centre in world space, size in metres) as seen from the frame. */
+  fun rectOf(f: Frame, centre: Vector3, widthM: Float, heightM: Float): PlacementPlanner.Rect {
+    val dx = centre.x - f.eye.x
+    val dz = centre.z - f.eye.z
+    return PlacementPlanner.rectAt(dx * f.right.x + dz * f.right.z, centre.y - f.eye.y, dx * f.fwd.x + dz * f.fwd.z, widthM, heightM)
+  }
+
+  /** World pose for a planned spot: facing the user, pulled in if a scanned wall is in the way. */
+  fun poseAt(f: Frame, s: PlacementPlanner.Spot): Pose {
+    val dir = yaw(f.fwd, f.right, s.yawDeg)
+    val distance = clampToRoom(f.eye, dir, s.distanceM)
+    val pos = f.eye + dir * distance
+    pos.y = f.eye.y + s.upM
+    return Pose(pos, Quaternion.lookRotation(Vector3(pos.x - f.eye.x, 0f, pos.z - f.eye.z)))
   }
 
   private fun place(slot: Slot): Pose {

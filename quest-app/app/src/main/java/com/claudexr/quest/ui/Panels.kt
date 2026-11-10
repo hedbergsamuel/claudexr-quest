@@ -182,7 +182,7 @@ fun PreviewPanel(spec: PreviewSpec, onDismiss: () -> Unit, onRecenter: () -> Uni
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun HtmlPanel(spec: HtmlSpec, onDismiss: () -> Unit, onRecenter: () -> Unit) {
+fun HtmlPanel(spec: HtmlSpec, onDismiss: () -> Unit, onRecenter: () -> Unit, onContentHeight: (Int) -> Unit = {}) {
   // Rendered by the bridge (xr_present templates / xr_show html). The title is part of the HTML.
   Column(Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)).background(Bg)) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.End) {
@@ -200,6 +200,14 @@ fun HtmlPanel(spec: HtmlSpec, onDismiss: () -> Unit, onRecenter: () -> Unit) {
             webViewClient =
                 object : WebViewClient() {
                   override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true // no navigation
+
+                  // 0.4.0 (BUG-0863a3): report how tall the content really is (CSS px = dp here), so the panel can
+                  // grow to fit instead of making the user scroll a dashboard.
+                  override fun onPageFinished(view: WebView, url: String?) {
+                    view.evaluateJavascript("Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)") { v ->
+                      v?.trim('"')?.toFloatOrNull()?.let { onContentHeight(it.toInt()) }
+                    }
+                  }
                 }
           }
         },

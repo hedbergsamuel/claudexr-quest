@@ -47,6 +47,8 @@ class PanelManager(
     /** push-to-talk aimed at a panel (null = global): down = true while held */
     private val talk: (panelId: String?, down: Boolean) -> Unit,
     private val send: (String) -> Boolean,
+    /** visible system panels (activity panel ...) that planned panels must not cover: centre, width, height */
+    private val systemPanels: () -> List<Triple<Vector3, Float, Float>> = { emptyList() },
 ) {
   /** Video acks / IDR requests go back on the video socket. */
   interface VideoLink {
@@ -58,8 +60,9 @@ class PanelManager(
   private inner class Open(var id: String, var role: Role, val spec: MutableState<PanelSpec>, var widthM: Float, var heightM: Float) {
     var entity: Entity? = null
     var regIds = mutableListOf<Int>()
-    var slot = 0
     var minimized = false
+    /** HTML panels grow once to fit their content (BUG-0863a3); reset when the content changes */
+    var fitted = false
     var movedByUser = false
     var placedPose: Pose? = null
     var lastSeenPose: Pose? = null
@@ -100,7 +103,7 @@ class PanelManager(
       warm.role = msg.role
       warm.spec.value = msg.panel
       open[msg.id] = warm
-      layout.recenter()
+      recenterIfRoomIsEmpty(warm)
       place(warm, defaultPose(warm))
       warm.entity?.setComponent(Visible(true))
       count.intValue = open.size
@@ -112,16 +115,28 @@ class PanelManager(
       o.streamId = msg.panel.streamId
       byStream[msg.panel.streamId] = o
       if (msg.role == Role.OVERLAY) overlay()?.let { o.widthM = it.widthM; o.heightM = it.heightM }
+    } else if (msg.role == Role.OVERLAY) {
+      // BUG-405388: anything else shown "on the Mac screen" is never bigger than the Mac screen.
+      macBox()?.let { m ->
+        val (fw, fh) = PlacementPlanner.fitInside(o.widthM, o.heightM, m.second, m.third)
+        o.widthM = fw
+        o.heightM = fh
+      }
     }
     open[msg.id] = o
-    layout.recenter() // each new panel is placed relative to where the user is looking now
+    recenterIfRoomIsEmpty(o)
     create(o, defaultPose(o))
     count.intValue = open.size
   }
 
   fun update(msg: Update) {
     val o = open[msg.id] ?: return
-    msg.panel?.let { if (it::class == o.spec.value::class) o.spec.value = it }
+    msg.panel?.let {
+      if (it::class == o.spec.value::class) {
+        o.spec.value = it
+        o.fitted = false // new content may need more room
+      }
+    }
     var recreate = false
     if (msg.widthM != null && msg.heightM != null && (msg.widthM != o.widthM || msg.heightM != o.heightM) && o.role != Role.OVERLAY) {
       o.widthM = msg.widthM
@@ -193,18 +208,24 @@ class PanelManager(
     relayout(keepUserMoves = true)
   }
 
-  /** Put panels back in their role slots. Recenter (keepUserMoves=false) also resets user moves. */
+  /**
+   * Plan every panel again (see PlacementPlanner). Recenter (keepUserMoves=false) also resets user moves.
+   * Order: the Mac screen first (everything else is planned around it), then panels the user placed (they stay),
+   * then the rest in the order they were opened.
+   */
   fun relayout(keepUserMoves: Boolean = false) {
-    val perRole = HashMap<Role, Int>()
     var tray = 0
+    open.values.forEach { if (!keepUserMoves) it.movedByUser = false }
+    open.values.filter { it.role == Role.OVERLAY && !it.minimized && !it.movedByUser }.forEach { place(it, overlayPose(it)) }
+    val placed = ArrayList<Open>(open.values.filter { !it.minimized && it.movedByUser })
     open.values.forEach {
-      if (!keepUserMoves) it.movedByUser = false
       if (it.minimized) {
         place(it, layout.trayPose(tray++), scale = 0.35f)
-      } else {
-        val i = perRole.merge(it.role, 1, Int::plus)!! - 1
-        if (!it.movedByUser) place(it, if (it.role == Role.OVERLAY) overlay()?.pose ?: layout.poseFor(it.role, i) else layout.poseFor(it.role, i))
-        else it.entity?.setComponent(Scale(Vector3(1f)))
+      } else if (it.movedByUser) {
+        it.entity?.setComponent(Scale(Vector3(1f)))
+      } else if (it.role != Role.OVERLAY) {
+        place(it, planPose(it, placed))
+        placed += it
       }
     }
   }
@@ -276,12 +297,74 @@ class PanelManager(
 
   // ---------------- internals ----------------
 
-  private fun defaultPose(o: Open): Pose {
-    if (o.role == Role.OVERLAY) overlay()?.let { return it.pose }
-    // Lowest free slot in the role (review B10: no two panels on the same spot after a removal).
-    val used = open.values.filter { it.role == o.role && it !== o && !it.minimized }.map { it.slot }.toSet()
-    o.slot = generateSequence(0) { it + 1 }.first { it !in used }
-    return layout.poseFor(o.role, o.slot)
+  private fun defaultPose(o: Open): Pose = if (o.role == Role.OVERLAY) overlayPose(o) else planPose(o, open.values.filter { !it.minimized })
+
+  /** The stream panel that shows the Mac screen (role overlay), if any. */
+  private fun macPanel(): Open? = open.values.firstOrNull { it.role == Role.OVERLAY && it.spec.value is StreamSpec && !it.minimized && it.placedPose != null }
+
+  /** Where the Mac screen is and how big: the live mirror panel, else the saved calibration. Centre, width, height. */
+  private fun macBox(): Triple<Vector3, Float, Float>? {
+    macPanel()?.let { m -> return Triple(m.placedPose!!.t, m.widthM, m.heightM) }
+    return overlay()?.let { Triple(it.pose.t, it.widthM, it.heightM) }
+  }
+
+  /** Role overlay = on the Mac screen. The mirror itself sits exactly there; anything else 3 cm in front of it. */
+  private fun overlayPose(o: Open): Pose {
+    val base = overlay()?.pose ?: (if (o.spec.value is StreamSpec) null else macPanel()?.placedPose) ?: layout.poseFor(Role.OVERLAY, 0)
+    if (o.spec.value is StreamSpec) return base
+    val eye = layout.frame(base.t).eye
+    val toEye = eye - base.t
+    val l = toEye.length()
+    return if (l > 0.1f) Pose(base.t + toEye * (0.03f / l), base.q) else base
+  }
+
+  private fun zoneOf(o: Open): PlacementPlanner.Zone {
+    val spec = o.spec.value
+    return when {
+      // Cards that wait for an answer: closest to the user and never under another panel.
+      spec is AskSpec || spec is PermissionSpec || spec is ListenSpec || spec is HeardSpec || (spec is TestSpec && spec.url == null) -> PlacementPlanner.Zone.QUESTION
+      o.role == Role.SIDE -> PlacementPlanner.Zone.RIGHT
+      o.role == Role.LOG -> PlacementPlanner.Zone.LEFT
+      else -> PlacementPlanner.Zone.CENTER
+    }
+  }
+
+  /**
+   * A free spot for [o]: never on top of [others] (where they are NOW, also after the user moved them), never
+   * behind or below the Mac screen (BUG-1fcf21, BUG-3115b5, BUG-4a4024, BUG-068994, BUG-405388).
+   */
+  private fun planPose(o: Open, others: Collection<Open>): Pose {
+    val mac = macBox()
+    val frame = layout.frame(mac?.first)
+    val occupied =
+        others
+            .filter { it !== o && !it.minimized && it.role != Role.OVERLAY }
+            .mapNotNull { p -> p.placedPose?.let { layout.rectOf(frame, it.t, p.widthM, p.heightM) } } +
+            systemPanels().map { layout.rectOf(frame, it.first, it.second, it.third) }
+    val spot = PlacementPlanner.plan(zoneOf(o), o.widthM, o.heightM, occupied, mac?.let { layout.rectOf(frame, it.first, it.second, it.third) })
+    return layout.poseAt(frame, spot)
+  }
+
+  /** Without a Mac screen the layout origin follows the user: the first panel in an empty room re-captures it. */
+  private fun recenterIfRoomIsEmpty(o: Open) {
+    if (open.values.none { it !== o && !it.minimized }) layout.recenter()
+  }
+
+  /** The WebView measured its content: grow the panel (once per content) so nothing has to be scrolled. */
+  private fun fitContent(o: Open, contentDp: Int) {
+    val spec = o.spec.value
+    if (o.fitted || spec !is HtmlSpec || (spec.format != null && spec.format != "html") || o.role == Role.OVERLAY || o.minimized) return
+    val want = ((contentDp + HTML_HEADER_DP) / DP_PER_METER).coerceAtMost(MAX_FIT_HEIGHT_M)
+    if (want <= o.heightM * 1.03f) return
+    // Not from inside the WebView callback of the very panel that is about to be destroyed.
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+      if (open[o.id] !== o || o.fitted) return@post
+      o.fitted = true
+      o.heightM = want
+      val keep = if (o.movedByUser) o.placedPose else null
+      destroy(o)
+      create(o, keep ?: defaultPose(o))
+    }
   }
 
   private fun create(o: Open, pose: Pose) {
@@ -401,7 +484,7 @@ class PanelManager(
       is HeardSpec -> androidx.compose.runtime.LaunchedEffect(id) { answer(id, Protocol.heardAnswer(false)) }
       is PreviewSpec -> PreviewPanel(spec, onDismiss = { dismiss(id) }, onRecenter = onRecenter)
       is TextSpec -> TextPanel(spec, onDismiss = { dismiss(id) }, onRecenter = onRecenter)
-      is HtmlSpec -> HtmlPanel(spec, onDismiss = { dismiss(id) }, onRecenter = onRecenter)
+      is HtmlSpec -> HtmlPanel(spec, onDismiss = { dismiss(id) }, onRecenter = onRecenter, onContentHeight = { fitContent(o, it) })
       // No talk button on permission cards: voice can never approve anything.
       is PermissionSpec -> PermissionCard(spec, onDecision = { answer(id, Protocol.permissionAnswer(it)) }, onDismiss = { dismiss(id) })
       is StreamSpec -> Unit // rendered by the video panel
@@ -411,6 +494,9 @@ class PanelManager(
   companion object {
     const val DP_PER_METER = 1000f
     private const val PREWARM_ASK_H = 0.81f
+    /** the ⟲ ✕ row above the WebView of an HTML panel */
+    private const val HTML_HEADER_DP = 56f
+    private const val MAX_FIT_HEIGHT_M = 1.25f
 
     /** Panel size in metres (width, height). At 1000 dp/m one dp is 1 mm. Content scrolls if needed. */
     fun sizeFor(p: PanelSpec): Pair<Float, Float> =

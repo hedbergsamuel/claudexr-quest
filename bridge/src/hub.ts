@@ -125,6 +125,17 @@ const STREAM_READY_MS = Number(process.env.CLAUDEXR_STREAM_READY_MS || 8000);
 const DIM_STALL_MS = 8000;
 type HudMsg = Extract<BridgeToHeadset, { type: "hud" }>;
 
+/** Begripligt kalibreringsfel som säger vad användaren ska göra (BUG-cc393a). */
+export function calibrationHint(err: string): string {
+  const e = err.toLowerCase();
+  if (e === "timeout")
+    return "Kalibreringen fick ingen träff inom 45 s. Titta på Macens skärm med headsetet (rutmönstret ska synas stort), ta bort fönster som täcker mitten och kontrollera att Quest-appen har kameratillstånd. Försök igen.";
+  if (e.includes("camera_disconnected")) return "Headsetets kamera var inte tillgänglig. Starta om Quest-appen och försök igen.";
+  if (e.includes("marker_not_found")) return "Rutmönstret syntes inte. Titta rakt mot Macens skärm på 0,5–1 m avstånd och försök igen.";
+  if (e === "aborted") return "Kalibreringen avbröts.";
+  return err;
+}
+
 export class XrHub {
   private tlsServer: https.Server;
   private localServer = http.createServer((req, res) => this.onLocalHttp(req, res));
@@ -1229,6 +1240,7 @@ export class XrHub {
     this.markerProc?.kill();
     this.markerProc = null;
     if (!result.ok) logError("spegling", `screen calibration failed: ${result.error}`);
+    if (!result.ok) result.error = calibrationHint(String(result.error ?? ""));
     return { status: result.ok ? "answered" : "error", data: result };
   }
 

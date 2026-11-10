@@ -35,6 +35,7 @@ import { PairingStore } from "./pairing.js";
 import { ActivityTracker } from "./activity.js";
 import { StreamManager, StreamHandle, classifyApp, streamWidthFor, describeStreamError } from "./stream.js";
 import { XrFlag } from "./flag.js";
+import { CaffeinateAdapter, KeepAwake, type KeepAwakeAdapter } from "./keepawake.js";
 import { BrightnessGuard, HelperBrightnessAdapter, realDimAllowed } from "./brightness.js";
 import { VideoFlow } from "./videoflow.js";
 import { matchAB, matchLocalCommand, matchOption, matchVerdict, transcribePcm, LocalCommand, SAMPLE_RATE, VoiceInbox } from "./voice.js";
@@ -107,6 +108,8 @@ export interface HubOptions {
   bugs?: BugStore;
   /** injectable for tests (default: the helper adapter, only when display.dim is on and the real-dim guard allows it) */
   brightness?: BrightnessGuard;
+  /** håller Macen vaken medan displaystömmen lever (BUG-13e417); injicerbar för tester */
+  keepAwake?: KeepAwakeAdapter;
   /** hook on/off flag (default: <CLAUDEXR_FLAG_DIR|CLAUDEXR_STATE_DIR|~/.claudexr>/on); injectable for tests */
   flag?: XrFlag;
   /** extra loopback routes (e.g. "/mcp"); called after the token/Host/Origin checks */
@@ -133,6 +136,7 @@ export class XrHub {
   private sttQueue: Promise<void> = Promise.resolve();
   readonly voiceInbox = new VoiceInbox();
   readonly brightness?: BrightnessGuard;
+  private readonly keepAwake: KeepAwake;
   private displaySuppressed = false;
   private displayApproved = false;
   private displayStarting = false;
@@ -196,6 +200,7 @@ export class XrHub {
       (o.config.display.dim && realDimAllowed(process.env, o.config.captureBin)
         ? new BrightnessGuard(new HelperBrightnessAdapter(o.config.captureBin), stateDir(), o.config.display.dimLevel)
         : undefined);
+    this.keepAwake = new KeepAwake(o.keepAwake ?? (!process.env.CLAUDEXR_STATE_DIR ? new CaffeinateAdapter() : { start: () => false, stop: () => {} }));
     if (o.bugs) onError((m) => o.bugs!.autoLog(m, componentOf(m), this.devContext(false)));
     this.localToken = loadOrCreateLocalToken();
     this.flag = o.flag ?? new XrFlag();
@@ -273,6 +278,7 @@ export class XrHub {
   async close(): Promise<void> {
     clearInterval(this.heartbeat);
     clearTimeout(this.dimCheckTimer);
+    this.keepAwake.set(false);
     this.restoreBrightnessSync();
     this.flagOffSync();
     this.streams.shutdown();
@@ -387,7 +393,8 @@ export class XrHub {
       case "show":
         return this.show(cmd.role, cmd.panel, cmd.wait, cmd.timeoutMs, signal, cmd.widthM, cmd.heightM);
       case "clear":
-        return this.clear(cmd.id, cmd.role);
+        // xr_panel close "all" lämnar Macens skärm (BUG-7cf1b6); "everything" stänger även den.
+        return cmd.id === "everything" ? this.clear("all", cmd.role) : this.clear(cmd.id, cmd.role, cmd.id === "all" || (!cmd.id && !cmd.role));
       case "update":
         return this.update(cmd);
       case "layout":
@@ -565,10 +572,15 @@ export class XrHub {
    * stays off until the next headset connection or xr_stream display / "Starta skärmen").
    * id may be a panel id or a stream id (stream panels are in the registry and listed by xr_panel list).
    */
-  private clear(id?: string, role?: Role): CommandResult {
+  private clear(id?: string, role?: Role, keepDisplay = false): CommandResult {
     const all = id === "all" || (!id && !role);
+    const isDisplayPanel = (pid: string) => {
+      const sid = this.panels.get(pid)?.streamId;
+      return !!sid && this.streams.streams.get(sid)?.source === "display";
+    };
     const ids = [...this.panels.keys()].filter((pid) => {
       const p = this.panels.get(pid)!;
+      if (keepDisplay && isDisplayPanel(pid)) return false;
       if (all) return true;
       if (id) return pid === id || p.streamId === id;
       return p.msg.role === role;
@@ -581,14 +593,16 @@ export class XrHub {
       if (p.streamId) stoppedStreams.push(...this.stopStreamQuiet(p.streamId));
       this.removePanel(pid, false);
     }
-    if (all) stoppedStreams.push(...this.stopStreamQuiet()); // streams whose panel is already gone (orphans)
+    if (all && keepDisplay) {
+      for (const h of this.streams.streams.values()) if (h.source !== "display") stoppedStreams.push(...this.stopStreamQuiet(h.streamId));
+    } else if (all) stoppedStreams.push(...this.stopStreamQuiet()); // streams whose panel is already gone (orphans)
     else if (id && !ids.length) {
       // not a panel id: maybe a stream id/key whose panel was lost
       const hs = this.matchStreams(id);
       for (const h of hs) stoppedStreams.push(...this.stopStreamQuiet(h.streamId));
     }
     if (this.isConnected()) {
-      if (all) {
+      if (all && !keepDisplay) {
         this.send({ type: "clear" });
         this.send({ type: "sync", ids: [] });
       } else for (const pid of ids) this.send({ type: "clear", id: pid });
@@ -865,9 +879,10 @@ export class XrHub {
 
   /** Dim only while the headset really shows the display stream (frames acked recently); otherwise restore. */
   private updateDim() {
+    const d = this.displayStream();
+    this.keepAwake.set(!!d && d.state !== "stopped" && d.state !== "error" && this.isConnected());
     const g = this.brightness;
     if (!g) return;
-    const d = this.displayStream();
     const flow = d ? this.flows.get(d.streamId) : undefined;
     const flowing = !!flow && flow.lastAckAt > 0 && Date.now() - flow.lastAckAt < DIM_STALL_MS && !!this.videoWs && this.videoWs.readyState === WebSocket.OPEN;
     const want = this.isConnected() && !!d && d.state === "live" && flowing && Date.now() >= this.dimHoldUntil;
@@ -1130,6 +1145,9 @@ export class XrHub {
       case "close_all":
         this.clear();
         return this.toast("✓ Stängde alla paneler", "done");
+      case "close_others":
+        this.clear("all", undefined, true);
+        return this.toast("✓ Stängde allt utom Macens skärm", "done");
       case "recenter":
         this.send({ type: "recenter" });
         return this.toast("✓ Centrerat", "done");
@@ -1424,6 +1442,9 @@ export class XrHub {
         return;
       case "voice_decision":
         this.voiceDecisions.get(String(msg.id))?.(msg.send === true);
+        return;
+      case "close_others":
+        this.runLocalCommand("close_others");
         return;
       case "emergency_close":
         this.emergency();

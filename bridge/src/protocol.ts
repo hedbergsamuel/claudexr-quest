@@ -141,6 +141,7 @@ export type HeadsetToBridge =
   | { type: "voice_decision"; id: string; send: boolean }
   /** 0.3.0: panic button: close every panel and stream, restore brightness */
   | { type: "emergency_close" }
+  | { type: "close_others" }
   /** 0.3.0: "Starta skärmen": (re)start the always-on display stream */
   | { type: "restart_display" };
 

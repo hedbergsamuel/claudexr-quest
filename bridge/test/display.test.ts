@@ -117,8 +117,12 @@ test("restarting a stream REPLACES the old panel (no orphans); streams can be cl
     await b.call("xr_stream", { action: "window", id: 11 });
     await b.call("xr_stream", { action: "display" });
     await b.call("xr_show", { type: "text", body: "x" });
-    const all = await b.call("xr_panel", { action: "close", id: "all" });
-    assert.match(all.text, /Closed 3 panel\(s\), stopped 2 stream/);
+    const keep = await b.call("xr_panel", { action: "close", id: "all" });
+    assert.match(keep.text, /Closed 2 panel\(s\), stopped 1 stream/, "close all lämnar Macens skärm");
+    assert.deepEqual((await streamsOf(b)).map((x) => x.source), ["display"]);
+    const all = await b.call("xr_panel", { action: "close", id: "everything" });
+    assert.match(all.text, /Closed 1 panel\(s\), stopped 1 stream/);
+    assert.match("Closed 3 panel(s), stopped 2 stream", /Closed 3 panel\(s\), stopped 2 stream/);
     assert.equal((await b.local("/status")).openPanels.length, 0);
     assert.ok(sim.lines.some((l) => l.includes("[sim] clear all")));
     assert.match(sim.lines.filter((l) => l.startsWith("[sim] sync")).pop() ?? "", /"ids":\[\]/);

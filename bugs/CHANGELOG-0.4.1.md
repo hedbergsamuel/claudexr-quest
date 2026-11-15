@@ -120,4 +120,4 @@ Bryggan 0.4.1, Quest-appen 0.4.1 (versionCode 6), Mac-hjälparen 0.4.1 (Info.pli
 - Inmatning: ingenting når Macen än. Knapp och pekare i Quest-appen finns inte.
 
 ## Kräver ägaren
-Se slutet av `NATT-FRAMSTEG.md` (listan "Kräver ägaren 0.4.1").
+Se slutet av `docs/STATUS.md` (listan "Kräver ägaren 0.4.1").

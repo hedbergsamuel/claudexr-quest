@@ -1,4 +1,4 @@
-**Röstleverans 0.4.0 verifierad (2026-11-15):** Quest-appen assembleDebug OK (ej installerad), bridge `npm test` 152 pass/0 fail/2 skipped, typecheck rent. Nästa steg: röstkanal channelAlive-mätning, audio-start i serve, punkt 8 med hzdb/metavr enligt bugs/META-MCP-UNDERSOKNING.md.
+# ClaudeXR: utvecklingsstatus
 
 **0.4.1 KLAR i kod (2026-11-15):** punkt 3 (röstkanal opt-in, mätt: startas inte som standard; svensk svarsmatchning), 7 (Macens ljud: audio-start i serve, PCM över /video, AudioTrack), 8 (verktygsval adb|metavr|hzdb, `quest-cmds`, trådat läge dokumenterat, reverse via hzdb OBEKRÄFTAT), 6 (InputRouter bakom InputGate, NullInputSink, ingen CGEvent). Version 0.4.1 överallt. Brygga `npm test` 171 pass/0 fail/2 skipped, typecheck rent, Quest assembleDebug + 22 JVM-tester gröna, hjälparen kompilerad (aldrig körd). Detaljer: `bugs/CHANGELOG-0.4.1.md`, logg: `.natt-state/UTVECKLING-LOGG.md`.
 

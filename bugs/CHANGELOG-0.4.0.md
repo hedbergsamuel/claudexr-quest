@@ -11,7 +11,7 @@ Allt nedan är kod som kompilerar och har enhetstester med låtsashjälpare. Nyt
 - Lösning: Mac-hjälparen får `serve` (EN process för alla strömmar), bryggan kör `helperMode: shared` som standard.
   Reservläge `perStream` om hjälparen är gammal. Rollback: `CLAUDEXR_HELPER_MODE=perStream` eller `"helperMode": "perStream"` i `config.json`.
 - Fasta panel-id: Macens skärm `display`, fönster `win-<id>` (BUG-39391d).
-- Detaljer: `NATT-FRAMSTEG.md`.
+- Detaljer: `docs/STATUS.md`.
 
 ### 2. Panelplacering (BUG-1fcf21, BUG-3115b5, BUG-4a4024, BUG-068994, BUG-405388, BUG-0863a3)
 - Quest-appen: `PlacementPlanner` (ren matematik, enhetstestad) planerar i synfältet: inga överlapp, inget bakom/under Macens skärm

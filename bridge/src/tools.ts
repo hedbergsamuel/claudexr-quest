@@ -43,6 +43,7 @@ export function statusLine(s: XrStatus | null): string {
   const d = s.display;
   const extra = d ? [`display: ${d.alwaysOn ? "always on" : "manual"}${d.suppressed ? " (stopped; restarts on reconnect/xr_stream display)" : ""}${d.dimEnabled ? `, dimming ${d.dimmed ? "ACTIVE" : "off now"}` : ""}; mic ${s.mic?.listening ? "listening" : "idle"}`] : [];
   if (s.helperMode && s.helperMode !== "shared") extra.push(`helper: ${s.helperMode}`);
+  if (s.mic?.panelOpen) extra.push('voice system/near-head "Röst" (push-to-talk panel in the headset; close with xr_panel close id:voice)');
   if (s.voice) extra.push(`voice: next spoken message goes ${{ channel: "to the voice channel", rewake: "to Claude at once (wakes the idle session)", working: "to Claude at the next tool step", queued: "with the next prompt (no session is working or waiting)" }[s.voice.route]}${s.voice.queued ? `, ${s.voice.queued} waiting` : ""}`);
   return [`XR connected: ${s.device} (app ${s.appVersion ?? "?"}), layout ${s.layoutMode}, ${s.openPanels.length} panel(s)`, ...panels, ...streams, ...extra].join("\n");
 }
@@ -195,7 +196,7 @@ export function registerTools(server: McpServer, backend: XrBackend, opts: { dev
   server.registerTool(
     "xr_panel",
     {
-      description: "Manage panels: list | update (title/body/role/size/move m rel. to user) | close (id = panel or stream id | role | \"all\" = everything incl. ALL streams, display too, restores brightness) | layout (review|focus|present|tidy) | screen (preset cinema|bigger|smaller|farther|closer|reset = Mac screen as a big cinema screen straight ahead; never guess units). NOTE: move is ABSOLUTE metres from the user (forward 1.5 = 1.5 m in front), size is panel width/height in metres.",
+      description: "Manage panels: list | update (title/body/role/size/move m rel. to user) | close (id = panel or stream id | role | \"voice\" = the push-to-talk panel | \"all\" = every panel and window stream but NOT the Mac screen | \"everything\" = the Mac screen too, restores brightness) | layout (review|focus|present|tidy) | screen (preset cinema|bigger|smaller|farther|closer|reset = Mac screen as a big cinema screen straight ahead; never guess units). NOTE: move is ABSOLUTE metres from the user (forward 1.5 = 1.5 m in front), size is panel width/height in metres.",
       inputSchema: {
         action: z.enum(["list", "update", "close", "layout", "screen"]),
         preset: z.enum(SCREEN_PRESETS).optional(),

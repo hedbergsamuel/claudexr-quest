@@ -133,6 +133,9 @@ data class VoiceState(
     val autoSendMs: Int,
 ) : BridgeMessage
 
+/** 0.4.0: the bridge asks the app to open/close the near voice panel (xr_panel close id:voice, BUG-8324e4). */
+data class VoicePanelCmd(val open: Boolean) : BridgeMessage
+
 data class HudStream(val streamId: String, val title: String, val source: String, val state: String)
 
 /** 0.3.0: always-visible status line (what is streamed, mic, dimming). */
@@ -208,6 +211,7 @@ object Protocol {
                   o.optStringOrNull("detail"),
                   o.optInt("autoSendMs"),
               )
+          "voice_panel" -> VoicePanelCmd(o.optBoolean("open", false))
           "hud" ->
               Hud(
                   o.optString("text"),
@@ -370,6 +374,9 @@ object Protocol {
 
   fun voiceDecision(id: String, send: Boolean): String =
       JSONObject().put("type", "voice_decision").put("id", id).put("send", send).toString()
+
+  /** 0.4.0: tells the bridge whether the voice panel is open, so it shows up in xr_panel list and can be closed. */
+  fun voicePanel(open: Boolean): String = JSONObject().put("type", "voice_panel").put("open", open).toString()
 
   const val EMERGENCY_CLOSE = """{"type":"emergency_close"}"""
   const val CLOSE_OTHERS = """{"type":"close_others"}"""

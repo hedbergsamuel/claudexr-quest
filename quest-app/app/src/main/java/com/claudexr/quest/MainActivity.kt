@@ -264,6 +264,7 @@ class MainActivity : AppSystemActivity() {
       is Sync -> panels.sync(msg.ids)
       is Hud -> hud.value = msg
       is VoiceState -> onVoiceState(msg)
+      is VoicePanelCmd -> if (msg.open) openVoicePanel(auto = false) else closeVoicePanel()
       is Show -> panels.show(msg)
       is Update -> panels.update(msg)
       is Clear -> {
@@ -341,8 +342,10 @@ class MainActivity : AppSystemActivity() {
   private fun openVoicePanel(auto: Boolean) {
     voiceAutoOpened = auto
     if (!voiceOpen.value) voiceEntity?.setComponent(Transform(layout.nearHeadPose(VOICE_DISTANCE_M, VOICE_DOWN_M)))
+    val was = voiceOpen.value
     voiceOpen.value = true
     voiceEntity?.setComponent(Visible(true))
+    if (!was) connection.send(Protocol.voicePanel(true))
   }
 
   private fun closeVoicePanel() {
@@ -351,9 +354,11 @@ class MainActivity : AppSystemActivity() {
     val u = voiceUi.value
     if (u.state == "preview" && u.id != null) connection.send(Protocol.voiceDecision(u.id, false))
     voiceUi.value = VoiceUi()
+    val was = voiceOpen.value
     voiceOpen.value = false
     voiceAutoOpened = false
     voiceEntity?.setComponent(Visible(false))
+    if (was) connection.send(Protocol.voicePanel(false))
   }
 
   private fun decideVoice(send: Boolean) {
@@ -368,8 +373,21 @@ class MainActivity : AppSystemActivity() {
       if (voiceAutoOpened) closeVoicePanel()
       return
     }
-    // A card's own hold button (or a voice command) shows its progress and the preview in this panel.
-    if (!voiceOpen.value) openVoicePanel(auto = true)
+    // 0.4.0 (BUG-8324e4, BUG-82a49d, BUG-4a4024): the voice panel no longer pops up while the user is still holding
+    // a card's own talk button (it used to open between the user and that card). Progress is a small toast; the
+    // panel opens by itself only when a decision is needed (the preview with Skicka / Avbryt).
+    if (!voiceOpen.value) {
+      when (m.state) {
+        "preview" -> openVoicePanel(auto = true)
+        "transcribing" -> showToast(Toast("Transkriberar…", "info", false))
+        "sent" -> showToast(Toast("✓ Skickat${m.detail?.let { ": $it" } ?: ""}", "done", false))
+        "queued" -> showToast(Toast("Köat: ${m.detail ?: "följer med nästa prompt"}", "attention", false))
+        "cancelled" -> showToast(Toast("Avbrutet", "info", false))
+        "error" -> showToast(Toast("Röst: ${m.detail ?: "okänt fel"}", "attention", false))
+        else -> Unit // "listening": showMic() already shows "● Mikrofonen är på"
+      }
+      return
+    }
     if (voiceAutoOpened && m.state in setOf("sent", "queued", "cancelled", "error")) {
       main.removeCallbacksAndMessages(VOICE_HIDE_TOKEN)
       main.postAtTime({ if (voiceAutoOpened && voiceUi.value.state in setOf("sent", "queued", "cancelled", "error")) closeVoicePanel() }, VOICE_HIDE_TOKEN, android.os.SystemClock.uptimeMillis() + 3500)
@@ -399,6 +417,11 @@ class MainActivity : AppSystemActivity() {
       }
       voiceId = id
       micHeld.value = true
+      com.claudexr.quest.ui.MicState.active.value = true
+      // Hard stop: a release that never arrives (panel removed, lost pinch, latched tap forgotten) must not leave
+      // the microphone open or block the next press. The bridge caps a clip at 30 s anyway.
+      main.removeCallbacksAndMessages(MIC_MAX_TOKEN)
+      main.postAtTime({ if (voiceId == id) pushToTalk(panelId, false) }, MIC_MAX_TOKEN, android.os.SystemClock.uptimeMillis() + MIC_MAX_MS)
       cue(start = true)
       showMic(true)
       // Open the microphone just after the start cue, so the beep is not recorded.
@@ -408,6 +431,8 @@ class MainActivity : AppSystemActivity() {
         if (!recorder.start { pcm -> connection.sendVoiceChunk(cur, pcm) }) {
           voiceId = null
           micHeld.value = false
+          com.claudexr.quest.ui.MicState.active.value = false
+          main.removeCallbacksAndMessages(MIC_MAX_TOKEN)
           showMic(false)
           connection.sendMedia(Protocol.voiceCancel(cur))
           connection.sendMedia(Protocol.voiceError("mic_unavailable"))
@@ -420,6 +445,8 @@ class MainActivity : AppSystemActivity() {
       val id = voiceId ?: return
       voiceId = null
       micHeld.value = false
+      com.claudexr.quest.ui.MicState.active.value = false
+      main.removeCallbacksAndMessages(MIC_MAX_TOKEN)
       val pending = micStart
       micStart = null
       if (pending != null) {
@@ -441,6 +468,8 @@ class MainActivity : AppSystemActivity() {
     val id = voiceId ?: return
     voiceId = null
     micHeld.value = false
+    com.claudexr.quest.ui.MicState.active.value = false
+    main.removeCallbacksAndMessages(MIC_MAX_TOKEN)
     micStart?.let { main.removeCallbacks(it) }
     micStart = null
     recorder.stop()
@@ -575,12 +604,18 @@ class MainActivity : AppSystemActivity() {
     private const val REQUEST_MIC = 3
     private val TOAST_TOKEN = Any()
     private val VOICE_HIDE_TOKEN = Any()
+    private val MIC_MAX_TOKEN = Any()
     private const val MIC_START_DELAY_MS = 110L
-    // Voice panel: ~0.40 m in front of the head, 12 cm below eye height (finger reach).
-    private const val VOICE_DISTANCE_M = 0.40f
-    private const val VOICE_DOWN_M = 0.12f
-    private const val VOICE_W_M = 0.50f
-    private const val VOICE_H_M = 0.40f
+    private const val MIC_MAX_MS = 30_000L
+    // Voice panel. 0.3.x: 0.40 m in front of the head. That put it between the user and the card being answered,
+    // closer than the comfort rule allows (never nearer than 0.5 m, IDE-ff427a), and with hand tracking the pinch
+    // ray starts at the hand, i.e. at or behind a panel that close: the likely reason it "did not react to presses
+    // and could not be closed" (BUG-8324e4). 0.4.0: 0.75 m away, below the question card (questions sit at 1.0 m,
+    // straight ahead). Numbers are first guesses: NOT tested on a headset.
+    private const val VOICE_DISTANCE_M = 0.75f
+    private const val VOICE_DOWN_M = 0.38f
+    private const val VOICE_W_M = 0.60f
+    private const val VOICE_H_M = 0.46f
 
     // TODO(v3): a stand-alone voice-driven session (Agent SDK); text can't be injected safely into a running CLI.
     // TODO(v3): ISDK direct touch (poke) in addition to ray + pinch.

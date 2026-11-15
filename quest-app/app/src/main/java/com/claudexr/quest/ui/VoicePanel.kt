@@ -35,6 +35,47 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * Whether the microphone session is live (set by MainActivity). The talk buttons use it to drop a "latched" tap when
+ * the session ended some other way (30 s limit, panel closed, connection lost).
+ */
+object MicState {
+  val active = mutableStateOf(false)
+}
+
+/** A press shorter than this is a tap: the microphone stays on until the next tap (see holdOrTapToTalk). */
+const val TAP_LATCH_MS = 400L
+
+/**
+ * Hold to talk, OR tap once to start and once more to send. 0.3.x only had hold: with hand tracking a pinch is
+ * easily lost mid-sentence, and a held press that never reported its release left the microphone session stuck so
+ * that every later press was ignored (BUG-36fba1, BUG-82a49d, BUG-8324e4). UNTESTED on a headset.
+ */
+suspend fun androidx.compose.ui.input.pointer.PointerInputScope.holdOrTapToTalk(
+    pressed: androidx.compose.runtime.MutableState<Boolean>,
+    latched: androidx.compose.runtime.MutableState<Boolean>,
+    onTalk: (Boolean) -> Unit,
+) {
+  detectTapGestures(
+      onPress = {
+        if (latched.value) {
+          // second tap: stop and send
+          latched.value = false
+          onTalk(false)
+          tryAwaitRelease()
+          return@detectTapGestures
+        }
+        val t0 = android.os.SystemClock.uptimeMillis()
+        pressed.value = true
+        onTalk(true)
+        val released = tryAwaitRelease()
+        pressed.value = false
+        if (released && MicState.active.value && android.os.SystemClock.uptimeMillis() - t0 < TAP_LATCH_MS) latched.value = true
+        else onTalk(false)
+      },
+  )
+}
+
 /** What the bridge last said about the voice pipeline (voice_state). */
 data class VoiceUi(
     val id: String? = null,
@@ -51,10 +92,11 @@ private val Green = Color(0xFF3A8F5C)
 private val Grey = Color(0xFF2C2E35)
 
 /**
- * Big push-to-talk panel, placed close to the head (finger reach). Press and hold the big button to speak,
- * release to send. The recognised text is previewed here (Skicka / Avbryt) before it goes to the chat,
- * so there is no separate "Jag hörde" card that could collide with the next attempt.
- * 0.50 x 0.40 m at 1000 dp/m.
+ * Big push-to-talk panel. Hold the big button to speak and release to send, or tap once to start and once more to
+ * send. The recognised text is previewed here (Skicka / Avbryt) before it goes to the chat, so there is no separate
+ * "Jag hörde" card that could collide with the next attempt.
+ * 0.4.0: 0.60 x 0.46 m, 0.75 m away and below the line of sight (0.3.x: 0.40 m from the head, where it sat between
+ * the user and the card being answered and where the hand rays start behind the panel: BUG-8324e4).
  */
 @Composable
 fun VoicePanel(
@@ -80,7 +122,7 @@ fun VoicePanel(
           "queued" -> "Köat${ui.detail?.let { ": $it" } ?: ""}" to Color(0xFFE0B341)
           "cancelled" -> "Avbrutet" to Muted
           "error" -> "Fel: ${ui.detail ?: "okänt"}" to Color(0xFFF08A8A)
-          else -> "Håll in knappen och tala. Släpp för att skicka." to Muted
+          else -> "Håll in och tala, eller tryck en gång för att starta och en gång till för att skicka." to Muted
         }
     Text(status, color = color, fontSize = SmallSize, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(vertical = 4.dp))
     if (!mediaUp) Text("Röstkanalen återansluter…", color = Color(0xFFE0B341), fontSize = 16.sp)
@@ -133,22 +175,25 @@ private fun PreviewBlock(ui: VoiceUi, onDecision: (Boolean) -> Unit, modifier: M
 }
 
 /**
- * Large hold-to-talk target (>= 0.44 x 0.17 m). Works with ray + pinch/trigger held; direct finger poke depends on
- * the Spatial SDK mapping touches to pointer events (UNTESTED on a headset). If the panel is removed while pressed,
- * the release is still reported so the microphone never stays open.
+ * Large talk target (>= 0.44 x 0.17 m). Hold, or tap to start and tap again to send (holdOrTapToTalk). Works with
+ * ray + pinch/trigger; direct finger poke depends on the Spatial SDK mapping touches to pointer events (UNTESTED on a
+ * headset). If the panel is removed while the microphone is on, the release is still reported so it never stays open.
  */
 @Composable
 fun HoldToTalkBig(enabled: Boolean, held: Boolean, onTalk: (Boolean) -> Unit) {
   val pressed = remember { mutableStateOf(false) }
+  val latched = remember { mutableStateOf(false) }
+  LaunchedEffect(MicState.active.value) { if (!MicState.active.value) latched.value = false }
   DisposableEffect(Unit) {
     onDispose {
-      if (pressed.value) {
+      if (pressed.value || latched.value) {
         pressed.value = false
+        latched.value = false
         onTalk(false)
       }
     }
   }
-  val on = pressed.value || held
+  val on = pressed.value || latched.value || held
   Box(
       Modifier.fillMaxWidth()
           .height(170.dp)
@@ -156,17 +201,7 @@ fun HoldToTalkBig(enabled: Boolean, held: Boolean, onTalk: (Boolean) -> Unit) {
           .background(if (!enabled) Color(0xFF1F2024) else if (on) Red else Grey)
           .then(
               if (enabled)
-                  Modifier.pointerInput(Unit) {
-                    detectTapGestures(
-                        onPress = {
-                          pressed.value = true
-                          onTalk(true)
-                          tryAwaitRelease()
-                          pressed.value = false
-                          onTalk(false)
-                        },
-                    )
-                  }
+                  Modifier.pointerInput(Unit) { holdOrTapToTalk(pressed, latched, onTalk) }
               else Modifier,
           ),
       contentAlignment = Alignment.Center,
@@ -174,6 +209,7 @@ fun HoldToTalkBig(enabled: Boolean, held: Boolean, onTalk: (Boolean) -> Unit) {
     Text(
         when {
           !enabled -> "Transkriberar…"
+          latched.value -> "● Tryck för att skicka"
           on -> "● Släpp för att skicka"
           else -> "🎤 Håll in och tala"
         },

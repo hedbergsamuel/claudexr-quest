@@ -384,3 +384,28 @@ test("SÄKERHET: ett talat meddelande kan aldrig besvara en behörighetsfråga, 
     await b.close();
   }
 });
+
+test("röstpanelen syns i xr_panel list och går att stänga med id voice och med close all (BUG-8324e4)", async () => {
+  const b = await startBridge(nextPort());
+  const sim = await startSim(b);
+  try {
+    assert.equal((await b.call("xr_panel", { action: "list" })).text.includes("near-head"), false);
+    sim.ws.send(JSON.stringify({ type: "voice_panel", open: true })); // användaren öppnade den i headsetet
+    for (let i = 0; !(await b.local("/status")).mic.panelOpen; i++) {
+      assert.ok(i < 100);
+      await sleep(20);
+    }
+    assert.match((await b.call("xr_panel", { action: "list" })).text, /voice system\/near-head "Röst".*close id:voice/);
+    await b.call("xr_panel", { action: "close", id: "voice" });
+    await waitFor(() => sim.lines.some((l) => l.includes("voice_panel closed")), 3000);
+    assert.equal((await b.local("/status")).mic.panelOpen, false);
+    sim.ws.send(JSON.stringify({ type: "voice_panel", open: true }));
+    await sleep(150);
+    const before = sim.lines.length;
+    await b.call("xr_panel", { action: "close", id: "all" });
+    await waitFor(() => sim.lines.slice(before).some((l) => l.includes("voice_panel closed")), 3000);
+  } finally {
+    sim.close();
+    await b.close();
+  }
+});

@@ -103,6 +103,8 @@ export type BridgeToHeadset =
   | { type: "calibrate"; requestId: string; payload: string; modules: number; markerSizeM: number; screen: ScreenGeometry; seconds: number }
   | { type: "ping"; t: number }
   | { type: "recenter" }
+  /** 0.4.0: open/close the near voice panel (BUG-8324e4: it could not be closed from Claude's side) */
+  | { type: "voice_panel"; open: boolean }
   /** 0.3.0: every panel id the bridge knows (streams included). The headset removes any other panel (orphan sweeper). */
   | { type: "sync"; ids: string[] }
   /** 0.3.0: voice pipeline state for the near-head voice panel (listening -> transcribing -> preview -> sent|queued). */
@@ -145,6 +147,8 @@ export type HeadsetToBridge =
   /** 0.3.0: panic button: close every panel and stream, restore brightness */
   | { type: "emergency_close" }
   | { type: "close_others" }
+  /** 0.4.0: the near voice panel was opened/closed in the headset (so xr_panel list shows it and close id:voice works) */
+  | { type: "voice_panel"; open: boolean }
   /** 0.3.0: "Starta skärmen": (re)start the always-on display stream */
   | { type: "restart_display" };
 
@@ -182,7 +186,7 @@ export interface XrStatus {
   streams: { streamId: string; title: string; state: string; source?: string; panelId?: string; maxWidth?: number; kbps?: number; sent?: number; dropped?: number; rttMs?: number }[];
   /** 0.3.0 */
   display?: { alwaysOn: boolean; suppressed: boolean; approved: boolean; dimmed: boolean; dimEnabled: boolean };
-  mic?: { listening: boolean };
+  mic?: { listening: boolean; panelOpen?: boolean };
   /** 0.4.0: spoken messages waiting for Claude and where the next one would go (see voiceroute.ts) */
   voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number };
   /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */

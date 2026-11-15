@@ -147,6 +147,8 @@ export class XrHub {
   private voice = new Map<string, { chunks: Buffer[]; bytes: number; target?: string; startedAt: number }>();
   private voiceDecisions = new Map<string, (send: boolean) => void>();
   private sttQueue: Promise<void> = Promise.resolve();
+  /** 0.4.0: the headset's near voice panel is open (reported by the app; a system panel, not in this.panels) */
+  private voicePanelOpen = false;
   readonly voiceInbox = new VoiceInbox();
   /** 0.4.0 (BUG-6b9a81): delivers spoken messages into the running session through hooks (see voiceroute.ts). */
   readonly voiceRouter = new VoiceRouter(this.voiceInbox, Date.now, (n, via) => {
@@ -359,7 +361,7 @@ export class XrHub {
         dimmed: !!this.brightness?.dimmed,
         dimEnabled: !!this.brightness,
       },
-      mic: { listening: this.voice.size > 0 },
+      mic: { listening: this.voice.size > 0, panelOpen: this.voicePanelOpen },
       voice: this.voiceRouter.info(),
       helperMode: this.streams.helperMode(),
       streams: [...this.streams.streams.values()].map((s) => ({
@@ -602,6 +604,13 @@ export class XrHub {
    */
   private clear(id?: string, role?: Role, keepDisplay = false): CommandResult {
     const all = id === "all" || (!id && !role);
+    // 0.4.0 (BUG-8324e4): the voice panel is a system panel in the headset; "voice" closes it, and so does "all".
+    if ((id === "voice" || all) && this.isConnected() && (this.voicePanelOpen || id === "voice")) {
+      this.send({ type: "voice_panel", open: false });
+      const was = this.voicePanelOpen;
+      this.voicePanelOpen = false;
+      if (id === "voice") return { status: "cleared", data: { cleared: was ? ["voice"] : [], streamsStopped: [] } };
+    }
     const isDisplayPanel = (pid: string) => {
       const sid = this.panels.get(pid)?.streamId;
       return !!sid && this.streams.streams.get(sid)?.source === "display";
@@ -1366,6 +1375,7 @@ export class XrHub {
       if (this.headset === conn) {
         log(`headset disconnected (code ${code})`);
         this.headset = null;
+        this.voicePanelOpen = false;
         this.flagOffSync(); // heartbeat lost / 1006 / unpair all end up here
         // Privacy: never keep streaming into a headset that is gone.
         this.streams.stop();
@@ -1490,6 +1500,9 @@ export class XrHub {
         return;
       case "close_others":
         this.runLocalCommand("close_others");
+        return;
+      case "voice_panel":
+        this.voicePanelOpen = msg.open === true;
         return;
       case "emergency_close":
         this.emergency();

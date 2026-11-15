@@ -401,36 +401,50 @@ fun TextPanel(spec: TextSpec, onDismiss: () -> Unit, onRecenter: () -> Unit) {
 }
 
 
-/** Hold to talk. The microphone is open only while this is pressed (pinch/trigger held). */
+/**
+ * Talk button on a card: hold and release, or tap to start and tap again to send (holdOrTapToTalk).
+ * 0.4.0: if the card disappears while the microphone is on (answered, timed out, closed), the release is reported.
+ * 0.3.x did not, which left the microphone session open and made every later press do nothing (BUG-36fba1).
+ */
 @Composable
 fun TalkButton(label: String = "🎤 Håll och säg svaret", onTalk: (Boolean) -> Unit, modifier: Modifier = Modifier) {
   val pressed = remember { androidx.compose.runtime.mutableStateOf(false) }
+  val latched = remember { androidx.compose.runtime.mutableStateOf(false) }
+  androidx.compose.runtime.LaunchedEffect(MicState.active.value) { if (!MicState.active.value) latched.value = false }
+  androidx.compose.runtime.DisposableEffect(Unit) {
+    onDispose {
+      if (pressed.value || latched.value) {
+        pressed.value = false
+        latched.value = false
+        onTalk(false)
+      }
+    }
+  }
+  val on = pressed.value || latched.value
   Box(
       modifier
           .clip(RoundedCornerShape(16.dp))
-          .background(if (pressed.value) Color(0xFFB3261E) else Color(0xFF2C2E35))
-          .pointerInput(Unit) {
-            detectTapGestures(
-                onPress = {
-                  pressed.value = true
-                  onTalk(true)
-                  tryAwaitRelease()
-                  pressed.value = false
-                  onTalk(false)
-                },
-            )
-          }
+          .background(if (on) Color(0xFFB3261E) else Color(0xFF2C2E35))
+          .pointerInput(Unit) { holdOrTapToTalk(pressed, latched, onTalk) }
           .padding(horizontal = 18.dp, vertical = 12.dp),
       contentAlignment = Alignment.Center,
   ) {
-    Text(if (pressed.value) "● Mikrofonen är på, släpp för att skicka" else label, color = Fg, fontSize = SmallSize)
+    Text(
+        when {
+          latched.value -> "● Mikrofonen är på, tryck för att skicka"
+          pressed.value -> "● Mikrofonen är på, släpp för att skicka"
+          else -> label
+        },
+        color = Fg,
+        fontSize = SmallSize,
+    )
   }
 }
 
 @Composable
 fun ListenPanel(spec: ListenSpec, onTalk: (Boolean) -> Unit, onDismiss: () -> Unit) {
   PanelFrame(spec.prompt, onDismiss, null) {
-    Text("Claude väntar på ett muntligt svar.", color = Muted, fontSize = SmallSize)
+    Text("Claude väntar på ett muntligt svar. Håll in knappen medan du talar, eller tryck en gång för att starta och en gång till för att skicka. Texten visas innan den skickas.", color = Muted, fontSize = SmallSize)
     Spacer(Modifier.weight(1f))
     TalkButton(label = "🎤 Håll in och tala", onTalk = onTalk, modifier = Modifier.fillMaxWidth().height(110.dp))
   }

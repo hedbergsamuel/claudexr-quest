@@ -118,6 +118,10 @@ export async function runSim(opts: SimOptions): Promise<WebSocket> {
         return log(`[sim] connected to ${msg.server} ${msg.bridgeVersion} on ${msg.host} (dev ${msg.devMode})`);
       case "clear":
         return log(`[sim] clear ${msg.id ?? msg.role ?? "all"}`);
+      case "voice_panel":
+        // like the app: the voice panel follows the bridge and reports its state back
+        log(`[sim] voice_panel ${msg.open ? "open" : "closed"}`);
+        return send({ type: "voice_panel", open: msg.open === true });
       case "voice_state":
         log(`[sim] voice_state ${msg.state} ${short(msg)}`);
         // The preview in the voice panel: Skicka / Avbryt (answered like the real app, on the control socket).

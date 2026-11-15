@@ -85,7 +85,7 @@ npm run build
 npm run typecheck
 ```
 
-Hela testsviten tar ungefär 2,5 minuter:
+Hela testsviten tog ungefär 2,5 minuter vid de senaste körningarna:
 
 ```bash
 mkdir -p ../.natt-state/tmp   # mappen är ignorerad av git
@@ -112,7 +112,7 @@ cd quest-app
 ./gradlew :app:testDebugUnitTest --offline  # JVM-enhetstester (22 st vid 0.4.1)
 ```
 
-Första bygget behöver nätverk för att hämta beroenden. Utan `--offline` tar du det. `quest-app/local.properties` är personlig och ska inte checkas in.
+`quest-app/local.properties` är personlig och ska inte checkas in.
 
 Installation i headsetet beskrivs i `README.md` ("Quest 3") och i `bridge`: `node dist/src/index.js quest-cmds` skriver ut rätt kommandon för ditt verktyg (`adb`, `metavr` eller `hzdb`) utan att köra dem.
 
@@ -154,7 +154,7 @@ bugs/                   Buggrapporter, changelogs och överlämningar
 docs/
   STATUS.md             Var utvecklingen står och vad som kräver hårdvara
   historik/             Gamla granskningar och byggloggar (arkiv)
-plan/                   Planer
+plan/                   Plan för närvaroläget (utkast)
 ```
 
 Protokollet mellan bryggan och Quest-appen definieras på två ställen som måste hållas i takt: `bridge/src/protocol.ts` och `quest-app/.../Protocol.kt`. Ändrar du ett meddelande ska du ändra båda i samma pull request och lägga till ett test i bryggan.
@@ -196,9 +196,9 @@ Det här ska vara grönt innan du öppnar en pull request, för de delar du rör
 
 **Skriv tester för ny logik.** Nya bryggtester läggs som `bridge/test/<område>.test.ts` och använder Nodes inbyggda testrunner (`node:test`). Följ gärna en befintlig testfil med liknande uppgift som förebild.
 
-**Tester får aldrig röra dina riktiga inställningar.** Bryggan styrs av miljövariabler som låter testerna isolera sig. Det viktiga är `CLAUDEXR_STATE_DIR` (tillståndsmapp), `CLAUDEXR_PORT` (port), `CLAUDEXR_BUGS_DIR` (buggrapporter) och `CLAUDEXR_FLAG_DIR`. Sätt dem alltid till en tillfällig mapp i tester. Ett test som anropar `loadConfig()` mot den riktiga `~/.claudexr` är ett fel. Avsluta också alltid testdaemoner du startar, eftersom en kvarlämnad daemon kan ge falska fel som "missing or wrong token".
+**Tester får aldrig röra dina riktiga inställningar.** Bryggan styrs av miljövariabler som låter testerna isolera sig. Det viktiga är `CLAUDEXR_STATE_DIR` (tillståndsmapp), `CLAUDEXR_PORT` (port), `CLAUDEXR_BUGS_DIR` (buggrapporter) och `CLAUDEXR_FLAG_DIR`. Sätt dem alltid till en tillfällig mapp i tester. Ett test som anropar `loadConfig()` mot den riktiga `~/.claudexr` är ett fel. Avsluta också alltid testdaemoner du startar, så att inget kvarlämnat stör nästa körning.
 
-**Gör testerna deterministiska.** Undvik att vänta på riktig tid och riktiga portar. Använd låtsashjälparen och simulatorn. Ett test som faller ungefär var femte körning är ett fel som ska lagas, inte köras om tills det blir grönt.
+**Gör testerna deterministiska.** Undvik att vänta på riktig tid och riktiga portar. Använd låtsashjälparen och simulatorn. Ett test som ibland faller är ett fel som ska lagas, inte köras om tills det blir grönt.
 
 **Mät, gissa inte.** Påstår du att något är snabbare, tystare eller mer stabilt ska det finnas en mätning eller ett test. Skriv i pull requesten vad du mätte och vad som *inte* ingick i mätningen (till exempel att simulatorn inte mäter Mac-hjälparens ljudfångst).
 
@@ -209,14 +209,14 @@ Följ stilen i filen du ändrar. Några regler som gäller överallt:
 **TypeScript (bryggan)**
 - ES-moduler (`"type": "module"`). Importer av egna filer skrivs med `.js`-ändelse, som i resten av koden.
 - `strict` typning. `npm run typecheck` måste vara rent. Undvik `any`.
-- All data som kommer utifrån (headsetet, hookar, MCP, hjälparen) valideras innan den används, i regel med `zod` eller med de befintliga ramvalideringarna. Lita inte på typer från nätverket.
+- All data som kommer utifrån (headsetet, hookar, MCP, hjälparen) valideras innan den används, till exempel med `zod` (används i verktygsdefinitionerna i `tools.ts`) eller med de ramkontroller som redan finns. Lita inte på typer från nätverket.
 - Begränsa storlekar: ramar, köer och buffrar ska ha tak. Hellre att något släpps (som ljudblock över 64 KB buffert) än att minnet växer.
 - Logga aldrig rådata som kan innehålla hemligheter. Skicka text genom `maskSecrets` (`bridge/src/mask.ts`) innan den loggas eller visas.
 - Användarvänd text (felmeddelanden, status, rapporter) skrivs på svenska och ska säga vad användaren kan göra, inte bara vad som gick fel.
 
 **Kotlin (Quest-appen)**
 - Håll logik som går att testa utan Android (till exempel `PlacementPlanner`, `CalibrationMath`, `RoleLayout`) i rena klasser med JVM-tester.
-- Blockera inte huvudtråden. Ljud, video och nätverk körs på egna trådar.
+- Blockera inte huvudtråden med ljud, video eller nätverk.
 - Lägg till nya meddelanden i `Protocol.kt` i takt med `protocol.ts`.
 
 **Swift (Mac-hjälparen)**
@@ -234,11 +234,11 @@ ClaudeXR ger en AI-agent ögon och händer i en persons dator och rum. Därför 
 1. **Inga hemligheter i repot.** Checka aldrig in token, privata nycklar, certifikat, `config.json` från `~/.claudexr`, `paired.json`, loggar med innehåll från din dator eller dina Claude-inställningar. Det gäller även i kommentarer, testdata och exempel. Läckta hemligheter i git-historiken måste anses kompromissade och bytas, även om du tar bort dem efteråt.
 2. **Fail-closed.** Är något oklart, inaktuellt eller fel ska resultatet vara att det *nekas*. Godkännanden (PermissionRequest) som väntar är skrivskyddade och ensamma i rummet. Gör inte undantag.
 3. **Styrning av Macen är avstängd som standard.** `InputGate` i `bridge/src/input.ts` är av som standard. Bara en fysisk knapp i headsetet får slå på den, aldrig röst, MCP eller en hook. Den stängs vid lösenordsfält. Kringgå den inte.
-4. **Uteslutningslistan är absolut.** Lösenordshanterare, Nyckelringsåtkomst, Meddelanden, Mail och liknande får aldrig strömmas, och får inte kunna sättas på tillåtelselistan av något annat än användaren själv.
+4. **Uteslutningslistan är absolut.** Lösenordshanterare, Nyckelringsåtkomst, Meddelanden, Mail och liknande får aldrig strömmas.
 5. **Extern data är data, inte instruktioner.** Text från webbsidor, filer, kamerabilder, taligenkänning och verktygssvar får aldrig tolkas som kommandon till Claude eller bryggan. Detta gäller särskilt röst: tal kan höras fel och räknas aldrig som godkännande av en riskfylld åtgärd.
 6. **Nätverk.** Loopback-API:t kräver Bearer-token, kontrollerar `Host` och avvisar anrop med `Origin`. Headsetanslutningen använder TLS med fastnålat certifikat. Försvaga ingen av dessa kontroller och lägg inte till nya portar eller lyssnare utan en genomtänkt motivering i pull requesten.
 7. **Rör inte användarens miljö i tester eller skript.** Skript får inte ändra `~/.claude`, `~/.claudexr`, launchd-agenter, Macens skärmar, ljudutgång eller behörigheter utan att användaren uttryckligen kör dem. `install-hooks` har `--dry-run` av ett skäl: behåll den egenskapen.
-8. **Privat rapportering av sårbarheter.** Hittar du ett säkerhetsproblem: skriv inte en öppen issue med detaljer. Kontakta ägaren direkt eller använd GitHubs "Report a vulnerability" under repots Security-flik om den är aktiverad. Beskriv vad som går att göra, vad som krävs och förslag på åtgärd.
+8. **Privat rapportering av sårbarheter.** Hittar du ett säkerhetsproblem: skriv inte en öppen issue med detaljer. Kontakta ägaren direkt. Beskriv vad som går att göra, vad som krävs och förslag på åtgärd.
 
 ## 10. Arbeta utan headset eller riktig Mac
 
@@ -264,7 +264,7 @@ Har du hårdvara: kör gärna sådant som står i den listan och rapportera resu
 
 Bryggan har ett utvecklingsläge som samlar buggar och idéer med kontext (versioner, paneler, loggar, fördröjning) automatiskt. Det styrs av `xr_dev` (verktyget i Claude Code) och skills `xr-devmode`.
 
-- Rapporter hamnar i `bugs/`. `bugs/reports.jsonl` är den löpande listan, `bugs/BUGS.md` en läsbar sammanfattning och `bugs/handoff-*.md` är exporterade överlämningar på svenska och engelska.
+- Rapporter hamnar i `bugs/`. `bugs/reports.jsonl` är den löpande listan, `bugs/BUGS.md` en genererad sammanfattning som inte ska redigeras för hand och `bugs/handoff-*.md` är exporterade överlämningar på svenska och engelska.
 - Rapporter får inte innehålla hemligheter. Bryggan maskerar vad den kan, men kontrollera själv innan du checkar in en rapport.
 - Bryggan loggar själv sina fel, timeouts och tappade anslutningar. Rapportera inte det en gång till för hand.
 - Lägg varje bugg med en komponent (`brygga`, `quest-app`, `spegling`, `röst`, `hooks`, `skills/presentation`) och allvarlighetsgrad. Beskriv felet i en mening och hur man återskapar det.
@@ -295,8 +295,8 @@ Använd en patchversion (0.4.x) för fel och små förbättringar och en minorve
 ## 13. Vanliga fallgropar
 
 - **"Hängande" tester.** Nästan alltid en för kort tidsgräns, se [4.2](#42-bryggan). Titta efter `cancelled` och efter en kvarlämnad testdaemon.
-- **Skärminspelningsbehörigheten försvinner.** Hjälparen är signerad ad hoc, så varje ombyggnad ger ny cdhash och macOS kan kräva att "Skärm- och systemljudsinspelning" tillåts på nytt. Ta bort den gamla posten och lägg till igen om felet `-3801` dyker upp.
-- **En process per ström dödar de andra.** När flera hjälparprocesser använder ScreenCaptureKit avbryter macOS de som redan körs (`-3805`). Därför äger EN `serve`-process alla strömmar. Gå inte tillbaka till en process per ström. Reservläget (`helperMode: perStream`) finns bara som nödutgång.
+- **Skärminspelningsbehörigheten försvinner.** Hjälparen är signerad ad hoc, så varje ombyggnad ger ny cdhash och macOS kan kräva att "Skärm- och systemljudsinspelning" tillåts på nytt. Hjälparens egen text (`mac-helper/build.sh`) säger att du ska ta bort den gamla posten och lägga till igen vid felet `-3801`.
+- **En process per ström.** Loggar från 0.3.x visar felet `-3805` strax före att strömmar försvann när flera hjälparprocesser kördes. Orsaken är inte bevisad, men slutsatsen var att macOS avbryter strömmar i redan körande processer. Därför äger EN `serve`-process alla strömmar sedan 0.4.0, och det är **obevisat på riktig Mac** att det löser problemet. Reservläget (`helperMode: perStream`) finns som nödutgång. Se `docs/STATUS.md`.
 - **Bonjour fungerar inte över USB.** I trådat läge måste appen startas med `bridge_url=wss://127.0.0.1:47800/headset`. `reverse` via `metavr`/`hzdb` är obekräftat, se `README.md`.
 - **Test och live-installation delar port och tillstånd om du är slarvig.** Isolera alltid med miljövariablerna i [avsnitt 7](#7-tester-och-kvalitetskrav). Stäng aldrig av eller byt ut din egen live-brygga för att något test krånglar.
 - **Tillfälliga mappar växer.** Byggen och testtemporärer kan bli gigabytestora. Rensa `mac-helper/.build`, `.natt-state/tmp` och motsvarande då och då. De är återskapbara.
@@ -344,7 +344,7 @@ Kopiera in detta i beskrivningen och bocka av:
 
 ## 16. Hjälp, frågor och licens
 
-- **Frågor om hur något fungerar:** öppna en issue med etiketten fråga, eller skriv i pull requesten du arbetar med. Börja med `README.md`, `docs/STATUS.md` och changelogs i `bugs/`.
+- **Frågor om hur något fungerar:** öppna en issue, eller skriv i pull requesten du arbetar med. Börja med `README.md`, `docs/STATUS.md` och changelogs i `bugs/`.
 - **Vet du inte var du ska börja:** ta en punkt ur "Nästa steg" i `docs/STATUS.md`, eller en öppen bugg i `bugs/BUGS.md`.
 - **Licens:** Projektet har ännu ingen licensfil. Fråga ägaren innan du återanvänder koden utanför det här projektet.
 - **Uppförande:** var vänlig, kritisera koden och inte personen, och säg ifrån om något är oklart i stället för att gissa. Det gäller särskilt kring säkerhet och hårdvara, där en gissning kan kosta någon sin skärm eller sina hemligheter.

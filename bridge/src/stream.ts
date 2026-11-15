@@ -80,6 +80,27 @@ export function describeStreamError(code: string | undefined, message: string | 
 export interface StreamCallbacks {
   onState(s: StreamHandle, reason?: string): void;
   onFrame(streamId: string, ptsUs: bigint, flags: number, payload: Buffer): void;
+  /** 0.4.1: one block of Mac system audio (PCM s16le, 48 kHz, stereo). captureUs = the helper's timestamp. */
+  onAudio?(captureUs: bigint, pcm: Buffer): void;
+  onAudioState?(state: AudioState, reason?: string): void;
+}
+
+/** 0.4.1 (punkt 7): flag bit for an audio frame in the serve stdout protocol (Serve.swift / AudioCapture.swift). */
+export const FLAG_AUDIO = 0x80;
+/** serve protocol version that knows `audio-start` (an older helper silently ignores unknown commands) */
+export const SERVE_PROTOCOL_AUDIO = 2;
+export const AUDIO_RATE = 48_000;
+export const AUDIO_CHANNELS = 2;
+export type AudioState = "starting" | "live" | "paused" | "stopped" | "error";
+
+export interface AudioHandle {
+  sid: string;
+  state: AudioState;
+  startedAt: number;
+  framesOut: number;
+  bytesOut: number;
+  lastFrameAt: number;
+  error?: string;
 }
 
 /**
@@ -103,11 +124,14 @@ interface StartOpts {
   maxWidth: number;
 }
 
-type HelperEvent = { event?: string; sid?: string; rid?: string; reason?: string; width?: number; height?: number; message?: string; code?: number | string; windows?: WindowInfo[] };
+type HelperEvent = { event?: string; sid?: string; rid?: string; protocol?: number; reason?: string; width?: number; height?: number; message?: string; code?: number | string; windows?: WindowInfo[] };
 
 interface ServeProc {
   proc: ChildProcess;
   ready: boolean;
+  /** protocol number from serve_ready (1 = 0.4.0, 2 = 0.4.1 with audio) */
+  protocol: number;
+  readyWaiters: (() => void)[];
   lists: Map<string, { resolve: (w: WindowInfo[]) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
   /** frames that arrived for a sid we no longer know (a capture that did not stop) */
   stray: Map<string, number>;
@@ -196,7 +220,7 @@ export class StreamManager {
     }
     const proc = spawn(this.bin, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
     proc.stdin!.on("error", () => {});
-    const sv: ServeProc = { proc, ready: false, lists: new Map(), stray: new Map() };
+    const sv: ServeProc = { proc, ready: false, protocol: 0, readyWaiters: [], lists: new Map(), stray: new Map() };
     this.serve = sv;
     const q = new ByteQueue();
     proc.stdout!.on("data", (chunk: Buffer) => {
@@ -219,6 +243,10 @@ export class StreamManager {
         }
         const sid = frame.toString("ascii", 5, 5 + sidLen);
         const o = 5 + sidLen;
+        if (frame.readUInt8(o + 8) & FLAG_AUDIO) {
+          this.onAudioFrame(sv, sid, frame.readBigUInt64BE(o), frame.subarray(o + 9));
+          continue;
+        }
         const h = this.streams.get(sid);
         if (!h || !this.shared.has(sid)) {
           this.onStrayFrame(sv, sid);
@@ -233,8 +261,11 @@ export class StreamManager {
     this.readEvents(proc, (ev) => {
       if (ev.event === "serve_ready") {
         sv.ready = true;
+        sv.protocol = typeof ev.protocol === "number" ? ev.protocol : 1;
+        for (const w of sv.readyWaiters.splice(0)) w();
         return;
       }
+      if (this.audio && ev.sid === this.audio.sid) return this.onAudioEvent(ev);
       if (ev.event === "windows" || ev.event === "list_error") {
         const l = sv.lists.get(ev.rid ?? "");
         if (!l) return;
@@ -250,7 +281,7 @@ export class StreamManager {
         if (ev.event === "error") logError("spegling", `helper error: ${ev.message}`);
         return;
       }
-      if (ev.event === "stopped") sv.stray.delete(ev.sid);
+      if (ev.event === "stopped" || ev.event === "audio_stopped") sv.stray.delete(ev.sid);
       const h = this.streams.get(ev.sid);
       if (!h || !this.shared.has(ev.sid)) return;
       if (ev.event === "stopped") {
@@ -275,6 +306,14 @@ export class StreamManager {
   private onServeGone(sv: ServeProc, code: number | null, spawnError?: string) {
     if (this.serve === sv) this.serve = undefined;
     clearTimeout(sv.idleTimer);
+    for (const w of sv.readyWaiters.splice(0)) w();
+    const a = this.audio;
+    if (a && a.state !== "stopped" && a.state !== "error") {
+      this.audio = undefined;
+      a.state = "error";
+      a.error = spawnError ?? `the Mac helper ended (exit ${code})`;
+      this.cb.onAudioState?.("error", `Mac-hjälparen avslutades; ljudet stoppades (${a.error}).`);
+    }
     const mine = [...this.shared].map((id) => this.streams.get(id)).filter((h): h is StreamHandle => !!h);
     const lists = [...sv.lists.values()];
     sv.lists.clear();
@@ -313,10 +352,10 @@ export class StreamManager {
   }
 
   /** A capture we stopped keeps sending: ask again, and as a last resort end the whole helper (privacy first). */
-  private onStrayFrame(sv: ServeProc, sid: string) {
+  private onStrayFrame(sv: ServeProc, sid: string, audio = false) {
     const n = (sv.stray.get(sid) ?? 0) + 1;
     sv.stray.set(sid, n);
-    if (n === STRAY_RESEND_STOP) this.serveSend(sv, { cmd: "stop", sid });
+    if (n === STRAY_RESEND_STOP) this.serveSend(sv, { cmd: audio ? "audio-stop" : "stop", sid });
     else if (n === STRAY_KILL) {
       logError("spegling", `the Mac helper keeps capturing stream ${sid} after stop: ending the helper process`);
       sv.proc.kill("SIGTERM");
@@ -328,9 +367,9 @@ export class StreamManager {
     const sv = this.serve;
     if (!sv) return;
     clearTimeout(sv.idleTimer);
-    if (this.shared.size || sv.lists.size) return;
+    if (this.shared.size || sv.lists.size || this.audio) return;
     sv.idleTimer = setTimeout(() => {
-      if (this.serve !== sv || this.shared.size || sv.lists.size) return;
+      if (this.serve !== sv || this.shared.size || sv.lists.size || this.audio) return;
       this.serve = undefined;
       sv.proc.stdin?.end(); // the helper exits when its stdin closes
       const t = setTimeout(() => sv.proc.kill("SIGTERM"), 2000);
@@ -346,8 +385,92 @@ export class StreamManager {
     this.opts.delete(h.streamId);
   }
 
+  // ---------------- 0.4.1: Mac system audio (punkt 7) ----------------
+
+  audio?: AudioHandle;
+
+  /**
+   * Start system audio in the shared helper. Needs serve protocol >= 2 (0.4.1 helper): an older helper ignores
+   * unknown commands, so the version is checked first instead of waiting for audio that never comes.
+   * Audio is OFF until this is called; it is never started automatically.
+   */
+  async startAudio(excludeBundles: string[], readyTimeoutMs = 5000): Promise<{ ok: boolean; sid?: string; error?: string }> {
+    if (this.audio && (this.audio.state === "live" || this.audio.state === "starting" || this.audio.state === "paused")) return { ok: true, sid: this.audio.sid };
+    if (!this.useShared()) return { ok: false, error: "Ljud kräver den delade Mac-hjälparen (helperMode shared, hjälpare 0.4.1)." };
+    if (!this.available()) return { ok: false, error: this.helperMissing().message };
+    const sv = this.ensureServe();
+    if (!sv.ready) {
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, readyTimeoutMs);
+        sv.readyWaiters.push(() => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
+    if (this.serve !== sv || !sv.ready) {
+      this.scheduleServeIdle();
+      return { ok: false, error: "Mac-hjälparen svarade inte (serve_ready saknas)." };
+    }
+    if (sv.protocol < SERVE_PROTOCOL_AUDIO) {
+      this.scheduleServeIdle();
+      return { ok: false, error: `Mac-hjälparen är för gammal för ljud (protokoll ${sv.protocol}, kräver ${SERVE_PROTOCOL_AUDIO}): bygg om (cd mac-helper && ./build.sh) och tillåt skärm- och systemljudsinspelning på nytt.` };
+    }
+    const sid = `au${randomUUID().slice(0, 6)}`;
+    this.audio = { sid, state: "starting", startedAt: Date.now(), framesOut: 0, bytesOut: 0, lastFrameAt: 0 };
+    this.serveSend(sv, { cmd: "audio-start", sid, excludeBundles });
+    return { ok: true, sid };
+  }
+
+  /** Stop system audio. Returns true if something was running. */
+  stopAudio(): boolean {
+    const a = this.audio;
+    if (!a) return false;
+    this.audio = undefined;
+    // Stray audio frames after this are counted like stray video frames (resend stop, then end the helper).
+    if (this.serve) this.serveSend(this.serve, { cmd: "audio-stop", sid: a.sid });
+    if (a.state !== "stopped" && a.state !== "error") this.cb.onAudioState?.("stopped");
+    this.scheduleServeIdle();
+    return true;
+  }
+
+  private onAudioFrame(sv: ServeProc, sid: string, captureUs: bigint, pcm: Buffer) {
+    const a = this.audio;
+    if (!a || a.sid !== sid) return this.onStrayFrame(sv, sid, true);
+    if (a.state === "starting") {
+      a.state = "live";
+      this.cb.onAudioState?.("live");
+    }
+    if (a.state !== "live") return; // paused (locked Mac): nothing leaks even if the helper misbehaves
+    a.framesOut++;
+    a.bytesOut += pcm.length;
+    a.lastFrameAt = Date.now();
+    this.cb.onAudio?.(captureUs, pcm);
+  }
+
+  private onAudioEvent(ev: HelperEvent) {
+    const a = this.audio!;
+    if (ev.event === "audio_started" && a.state === "starting") {
+      a.state = "live";
+      this.cb.onAudioState?.("live");
+    } else if (ev.event === "paused") {
+      a.state = "paused";
+      this.cb.onAudioState?.("paused", ev.reason);
+    } else if (ev.event === "resumed" && a.state === "paused") {
+      a.state = "live";
+      this.cb.onAudioState?.("live");
+    } else if (ev.event === "error" || ev.event === "audio_stopped") {
+      this.audio = undefined;
+      a.state = ev.event === "error" ? "error" : "stopped";
+      a.error = ev.message;
+      this.cb.onAudioState?.(a.state, ev.event === "error" ? describeStreamError(ev.code === undefined ? undefined : String(ev.code), ev.message, "Macens ljud") : undefined);
+      this.scheduleServeIdle();
+    }
+  }
+
   /** End the shared helper (bridge shutdown). */
   shutdown() {
+    this.stopAudio();
     this.stop();
     const sv = this.serve;
     this.serve = undefined;
@@ -521,6 +644,22 @@ export class StreamManager {
     if (stopped.length) this.scheduleServeIdle();
     return stopped;
   }
+}
+
+/**
+ * 0.4.1: audio block for the headset's /video socket. Bypasses VideoFlow (no credits, no keyframes):
+ *   [0xC3][u8 idLen][id ascii][u32 BE seq][u64 BE captureUs][u8 format (1 = PCM s16le 48 kHz stereo)][pcm]
+ */
+export function encodeAudioFrame(id: string, seq: number, captureUs: bigint, pcm: Buffer): Buffer {
+  const b = Buffer.from(id, "ascii");
+  const head = Buffer.alloc(2 + b.length + 13);
+  head.writeUInt8(0xc3, 0);
+  head.writeUInt8(b.length, 1);
+  b.copy(head, 2);
+  head.writeUInt32BE(seq >>> 0, 2 + b.length);
+  head.writeBigUInt64BE(captureUs, 2 + b.length + 4);
+  head.writeUInt8(1, 2 + b.length + 12);
+  return Buffer.concat([head, pcm]);
 }
 
 /** Video frame for the headset's /video socket. */

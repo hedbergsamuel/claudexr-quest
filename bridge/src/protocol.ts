@@ -189,6 +189,8 @@ export interface XrStatus {
   mic?: { listening: boolean; panelOpen?: boolean };
   /** 0.4.0: spoken messages waiting for Claude and where the next one would go (see voiceroute.ts) */
   voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number; channelEnabled?: boolean };
+  /** 0.4.1: Mac system audio */
+  audio?: { state: string; frames: number; dropped: number; kbps: number; error?: string };
   /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */
   helperMode?: string;
   bridge: { version: string; host: string; port: number; localPort: number; lanAddresses: string[]; mdnsType: string; pid: number; tlsFingerprint: string };
@@ -210,5 +212,8 @@ export type HubCommand =
   | { op: "emergency" }
   /** voice channel (stdio) polls confirmed spoken messages that no question was waiting for */
   | { op: "voice_take" }
+  /** 0.4.1 (punkt 7): Mac system audio to the headset (PCM over the /video socket); off until started */
+  | { op: "audio_start" }
+  | { op: "audio_stop" }
   | { op: "calibrate"; timeoutMs: number }
   | { op: "unpair"; deviceId?: string };

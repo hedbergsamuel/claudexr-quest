@@ -45,6 +45,11 @@ export interface SimOptions {
   /** video socket behaviour: ack every frame (default), never ack (to test flow control), or no socket */
   video?: "ack" | "noack" | "none";
   log?: (line: string) => void;
+  /**
+   * 0.4.1: called for every audio block (0xC3) on the media socket, with the arrival time. Audio is not logged line
+   * by line (100 blocks/s). captureUs from the fake helper is wall-clock µs, so arrival - capture = pipeline latency.
+   */
+  onAudio?: (a: { seq: number; captureUs: bigint; format: number; bytes: number; arrivedAtMs: number }) => void;
 }
 
 export async function discoverBridge(timeoutMs = 5000): Promise<string> {
@@ -167,6 +172,11 @@ export async function runSim(opts: SimOptions): Promise<WebSocket> {
     v.on("message", (raw, isBinary) => {
       if (!isBinary) return;
       const b = raw as Buffer;
+      if (b[0] === 0xc3) {
+        const al = b.readUInt8(1);
+        opts.onAudio?.({ seq: b.readUInt32BE(2 + al), captureUs: b.readBigUInt64BE(2 + al + 4), format: b.readUInt8(2 + al + 12), bytes: b.length - (2 + al + 13), arrivedAtMs: performance.timeOrigin + performance.now() });
+        return; // no ack: audio is outside the video flow control
+      }
       const idLen = b.readUInt8(1);
       const id = b.subarray(2, 2 + idLen).toString();
       const seq = b.readUInt32BE(2 + idLen);

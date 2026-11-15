@@ -34,7 +34,7 @@ import { BRIDGE_VERSION, XrConfig, stateDir } from "./config.js";
 import { TlsIdentity } from "./tls.js";
 import { PairingStore } from "./pairing.js";
 import { ActivityTracker } from "./activity.js";
-import { StreamManager, StreamHandle, classifyApp, streamWidthFor, describeStreamError } from "./stream.js";
+import { StreamManager, StreamHandle, classifyApp, streamWidthFor, describeStreamError, encodeAudioFrame } from "./stream.js";
 import { XrFlag } from "./flag.js";
 import { CaffeinateAdapter, KeepAwake, type KeepAwakeAdapter } from "./keepawake.js";
 import { BrightnessGuard, HelperBrightnessAdapter, realDimAllowed } from "./brightness.js";
@@ -124,6 +124,8 @@ const MAX_VISIBLE = 6;
 const STREAM_READY_MS = Number(process.env.CLAUDEXR_STREAM_READY_MS || 8000);
 /** the headset must have acked a frame this recently, otherwise the physical display is lit again */
 const DIM_STALL_MS = 8000;
+/** 0.4.1: drop an audio block when this much is already waiting in the /video socket (~0.3 s of PCM at 1.5 Mbit/s; later audio is useless) */
+const AUDIO_MAX_BUFFERED = 64 * 1024;
 type HudMsg = Extract<BridgeToHeadset, { type: "hud" }>;
 
 /** Begripligt kalibreringsfel som säger vad användaren ska göra (BUG-cc393a). */
@@ -166,6 +168,10 @@ export class XrHub {
   private dimCheckTimer?: NodeJS.Timeout;
   private videoWs: WebSocket | null = null;
   private flows = new Map<string, VideoFlow>();
+  /** 0.4.1: audio blocks sent / dropped (socket backed up) */
+  private audioSeq = 0;
+  private audioDropped = 0;
+  private audioLastError?: string;
   private headset: HeadsetConn | null = null;
   private panels = new Map<string, OpenPanel>();
   private heartbeat?: NodeJS.Timeout;
@@ -210,6 +216,15 @@ export class XrHub {
           this.flowFor(id).onFrame(pts, flags, payload);
           const h = this.streams.streams.get(id);
           if (h) this.maybeDimSoon(h);
+        },
+        onAudio: (captureUs, pcm) => this.sendAudio(captureUs, pcm),
+        onAudioState: (state, reason) => {
+          if (state === "error") {
+            this.audioLastError = reason;
+            logError("ljud", reason ?? "Macens ljud stoppades av ett fel");
+          }
+          log(`audio: ${state}${reason ? ` (${reason})` : ""}`);
+          this.updateHud();
         },
       },
       o.config.helperMode ?? "shared",
@@ -364,6 +379,7 @@ export class XrHub {
       mic: { listening: this.voice.size > 0, panelOpen: this.voicePanelOpen },
       voice: { ...this.voiceRouter.info(), channelEnabled: !!this.o.config.voice.channel },
       helperMode: this.streams.helperMode(),
+      audio: this.audioStatus(),
       streams: [...this.streams.streams.values()].map((s) => ({
         streamId: s.streamId,
         title: s.title,
@@ -456,6 +472,15 @@ export class XrHub {
         return this.stopStreams(cmd.streamId);
       case "emergency":
         return this.emergency();
+      case "audio_start": {
+        if (!this.isConnected()) return { status: "error", data: { error: "Headsetet är inte anslutet: ljudet startas inte." } };
+        this.audioLastError = undefined;
+        const r = await this.streams.startAudio(this.o.config.stream.excludeApps.filter((x) => x.includes(".")));
+        if (!r.ok) return { status: "error", data: { error: r.error } };
+        return { status: "updated", data: { audio: "starting", sid: r.sid, format: "pcm_s16le_48000_2" } };
+      }
+      case "audio_stop":
+        return { status: "cleared", data: { stopped: this.streams.stopAudio() } };
       case "voice_take": {
         // 0.4.1: off by default. A channel that is not enabled never marks itself alive and never takes messages.
         if (!this.o.config.voice.channel) return { status: "answered", data: { messages: [], disabled: true } };
@@ -686,6 +711,7 @@ export class XrHub {
 
   /** Panic button / "close everything": panels, streams (display too), brightness. */
   private emergency(): CommandResult {
+    this.streams.stopAudio();
     const r = this.clear();
     this.displaySuppressed = true;
     this.voice.clear();
@@ -968,6 +994,31 @@ export class XrHub {
       dimmed: !!this.brightness?.dimmed,
       displayState,
     });
+  }
+
+  /**
+   * 0.4.1: audio goes on the /video socket WITHOUT VideoFlow (no credits, no keyframe waits). When the socket is
+   * backed up (video IDR, weak Wi-Fi) the block is dropped instead of queued: late audio is worse than a gap.
+   */
+  private sendAudio(captureUs: bigint, pcm: Buffer) {
+    const ws = this.videoWs;
+    if (!this.isConnected() || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > AUDIO_MAX_BUFFERED) {
+      this.audioDropped++;
+      return;
+    }
+    ws.send(encodeAudioFrame("mac", this.audioSeq++, captureUs, pcm));
+  }
+
+  private audioStatus() {
+    const a = this.streams.audio;
+    const secs = a ? Math.max(1, (Date.now() - a.startedAt) / 1000) : 1;
+    return {
+      state: a?.state ?? (this.audioLastError ? "error" : "off"),
+      frames: a?.framesOut ?? 0,
+      dropped: this.audioDropped,
+      kbps: a ? Math.round((a.bytesOut * 8) / secs / 1000) : 0,
+      ...(this.audioLastError && !a ? { error: this.audioLastError } : {}),
+    };
   }
 
   private flowFor(id: string): VideoFlow {
@@ -1380,6 +1431,7 @@ export class XrHub {
         this.voicePanelOpen = false;
         this.flagOffSync(); // heartbeat lost / 1006 / unpair all end up here
         // Privacy: never keep streaming into a headset that is gone.
+        this.streams.stopAudio();
         this.streams.stop();
         this.videoWs?.close(4000, "headset gone");
         // The physical screen must light up again at once, and half-finished voice input is dropped.

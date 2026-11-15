@@ -148,4 +148,20 @@ class ProtocolTest {
     assertEquals("emergency_close", JSONObject(Protocol.EMERGENCY_CLOSE).getString("type"))
     assertEquals("restart_display", JSONObject(Protocol.RESTART_DISPLAY).getString("type"))
   }
+
+  @Test
+  fun parsesAudioBlocksAndRejectsGarbage() {
+    val pcm = ByteArray(1920) { (it % 7).toByte() }
+    val buf = java.nio.ByteBuffer.allocate(2 + 3 + 13 + pcm.size)
+    buf.put(0xC3.toByte()).put(3).put("mac".toByteArray()).putInt(-2).putLong(123456789L).put(1).put(pcm)
+    val a = Protocol.parseAudio(buf.array())!!
+    assertEquals(0xfffffffeL, a.seq)
+    assertEquals(123456789L, a.captureUs)
+    assertEquals(1920, a.pcm.size)
+    assertEquals(3, a.pcm[3].toInt())
+    assertNull(Protocol.parseAudio(byteArrayOf(0xC2.toByte(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+    val bad = buf.array().copyOf(); bad[2 + 3 + 12] = 9 // unknown format
+    assertNull(Protocol.parseAudio(bad))
+    assertNull(Protocol.parseAudio(buf.array().copyOf(2 + 3 + 13 + 3))) // torn stereo frame
+  }
 }

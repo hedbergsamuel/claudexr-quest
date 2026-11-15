@@ -106,6 +106,7 @@ class MainActivity : AppSystemActivity() {
             onMessage = ::onBridgeMessage,
             onVideo = { panels.onVideo(it) },
             onLost = ::onConnectionLost,
+            onAudio = { macAudio.push(it) },
         )
     panels =
         PanelManager(
@@ -177,10 +178,14 @@ class MainActivity : AppSystemActivity() {
     if (::connection.isInitialized) connection.nudge() // reconnect at once after taking the headset off/on
   }
 
+  /** 0.4.1: Mac system audio (punkt 7). Silent until the bridge sends audio blocks. */
+  private val macAudio = MacAudioPlayer()
+
   override fun onPause() {
     // Review 2 R2-06: the microphone and the passthrough camera must not stay open while the app is in
     // the background (headset taken off mid push-to-talk: the "release" event never arrives).
     cancelVoiceCapture()
+    macAudio.flush() // nothing queued plays back later; new blocks (if any) start fresh
     if (::calibrator.isInitialized) calibrator.cancel("app_paused")
     runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
     super.onPause()
@@ -188,6 +193,7 @@ class MainActivity : AppSystemActivity() {
 
   override fun onDestroy() {
     connection.stop()
+    macAudio.release()
     super.onDestroy()
   }
 

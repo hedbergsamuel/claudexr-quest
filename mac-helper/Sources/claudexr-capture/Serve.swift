@@ -15,16 +15,20 @@ import Foundation
 ///   {"cmd":"key","sid":"ab12cd34"}                 IDR now
 ///   {"cmd":"bitrate","sid":"ab12cd34","bps":8000000}
 ///   {"cmd":"list","rid":"r1"}                      -> {"event":"windows","rid":"r1","windows":[...]}
+///   {"cmd":"audio-start","sid":"au1","excludeBundles":[...]}   0.4.1, protocol 2: system audio (AudioCapture.swift)
+///   {"cmd":"audio-stop","sid":"au1"}               ("stop" with that sid works too)
 /// stdout: frames [u32 BE len][u8 sidLen][sid][u64 BE captureUs][u8 flags(1=key)][H.264 Annex-B]
 /// stderr: JSON events, each with "sid": started | first_frame | paused | resumed | stopped | error
-///         plus {"event":"serve_ready","protocol":1} once at start.
+///         plus {"event":"serve_ready","protocol":2} once at start (1 = 0.4.0 without audio; it ignores audio-start).
+///         Audio frames carry flags 0x80 and PCM s16le 48 kHz stereo; audio events: audio_started | audio_stopped.
 /// stdin closed (the bridge died or let go) = exit, so no capture can outlive the bridge.
 final class Server {
   private var captures: [String: Capture] = [:]
+  private var audio: [String: AudioCapture] = [:]
   private let lock = NSLock()
 
   func run() {
-    emit(["event": "serve_ready", "protocol": 1])
+    emit(["event": "serve_ready", "protocol": 2])
     Thread {
       while let line = readLine() {
         guard let data = line.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -41,16 +45,54 @@ final class Server {
     return captures[sid]
   }
 
+  private func getAudio(_ sid: String) -> AudioCapture? {
+    lock.lock(); defer { lock.unlock() }
+    return audio[sid]
+  }
+
+  private func validSid(_ sid: String) -> Bool {
+    !sid.isEmpty && sid.utf8.count <= 32 && sid.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+  }
+
   private func handle(_ cmd: String, _ o: [String: Any]) {
     let sid = (o["sid"] as? String) ?? ""
     switch cmd {
-    case "start":
-      // sid: short ascii id chosen by the bridge (it is echoed in every frame header, so keep it small).
-      guard !sid.isEmpty, sid.utf8.count <= 32, sid.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+    case "audio-start":
+      guard validSid(sid) else {
         emit(["event": "error", "sid": sid, "message": "bad sid", "code": "bad_request"])
         return
       }
-      if get(sid) != nil {
+      if get(sid) != nil || getAudio(sid) != nil {
+        emit(["event": "error", "sid": sid, "message": "sid already in use", "code": "bad_request"])
+        return
+      }
+      let a = AudioCapture(sid: sid, excludeBundles: (o["excludeBundles"] as? [String]) ?? [])
+      a.onEnd = { [weak self] c in
+        guard let self else { return }
+        self.lock.lock()
+        if self.audio[c.sid] === c { self.audio[c.sid] = nil }
+        self.lock.unlock()
+      }
+      lock.lock()
+      audio[sid] = a
+      lock.unlock()
+      Task {
+        do { try await a.start() } catch {
+          var e = errorEvent(error)
+          e["sid"] = sid
+          emit(e)
+          a.stop(reportStopped: false)
+        }
+      }
+    case "audio-stop":
+      if let a = getAudio(sid) { a.stop() } else { emit(["event": "audio_stopped", "sid": sid]) }
+    case "start":
+      // sid: short ascii id chosen by the bridge (it is echoed in every frame header, so keep it small).
+      guard validSid(sid) else {
+        emit(["event": "error", "sid": sid, "message": "bad sid", "code": "bad_request"])
+        return
+      }
+      if get(sid) != nil || getAudio(sid) != nil {
         emit(["event": "error", "sid": sid, "message": "sid already in use", "code": "bad_request"])
         return
       }
@@ -82,7 +124,7 @@ final class Server {
       }
     case "stop":
       // Unknown sid: answer "stopped" anyway so the bridge never waits for a capture that is already gone.
-      if let c = get(sid) { c.stop() } else { emit(["event": "stopped", "sid": sid]) }
+      if let c = get(sid) { c.stop() } else if let a = getAudio(sid) { a.stop() } else { emit(["event": "stopped", "sid": sid]) }
     case "key":
       get(sid)?.requestKeyframe()
     case "bitrate":

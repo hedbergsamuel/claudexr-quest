@@ -76,8 +76,30 @@ if (cmd === "list-windows") {
   //   FAKE_IGNORE_STOP=1       keep sending frames after "stop" (the bridge must end the helper)
   //   FAKE_SERVE_CRASH_AFTER=n exit(1) after n frames in total
   const ev = (o) => process.stderr.write(JSON.stringify(o) + "\n");
-  ev({ event: "serve_ready", protocol: 1 });
+  //   FAKE_SERVE_PROTOCOL=1    a 0.4.0 helper (no audio: ignores audio-start like the real one)
+  //   FAKE_AUDIO_MS=<ms>       audio block interval (default 10 ms = 480 frames); captureUs is wall-clock µs
+  const protocol = Number(process.env.FAKE_SERVE_PROTOCOL || 2);
+  ev({ event: "serve_ready", protocol });
   const caps = new Map();
+  const audio = new Map();
+  const audioMs = Number(process.env.FAKE_AUDIO_MS || 10);
+  const audioFrame = (sid) => {
+    const pcm = Buffer.alloc(Math.round((48000 * audioMs) / 1000) * 4);
+    const id = Buffer.from(sid, "ascii");
+    const head = Buffer.alloc(4 + 1 + id.length + 9);
+    head.writeUInt32BE(1 + id.length + 9 + pcm.length, 0);
+    head.writeUInt8(id.length, 4);
+    id.copy(head, 5);
+    head.writeBigUInt64BE(BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000)), 5 + id.length);
+    head.writeUInt8(0x80, 5 + id.length + 8);
+    process.stdout.write(Buffer.concat([head, pcm]));
+  };
+  const stopAudio = (sid, report) => {
+    const a = audio.get(sid);
+    if (a) clearInterval(a);
+    audio.delete(sid);
+    if (report) ev({ event: "audio_stopped", sid });
+  };
   let total = 0;
   const frame = (sid, n, key) => {
     const payload = Buffer.from([0, 0, 0, 1, key ? 0x67 : 0x41, n & 0xff]);
@@ -107,6 +129,16 @@ if (cmd === "list-windows") {
       if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(["serve", line]) + "\n");
       const m = JSON.parse(line);
       if (m.cmd === "list") ev({ event: "windows", rid: m.rid, windows: WINDOWS });
+      else if (m.cmd === "audio-start" && protocol >= 2) {
+        if (process.env.FAKE_AUDIO_ERROR) {
+          ev({ event: "error", sid: m.sid, code: Number(process.env.FAKE_AUDIO_ERROR), message: "audio capture failed" });
+          continue;
+        }
+        ev({ event: "audio_started", sid: m.sid, rate: 48000, channels: 2, format: "s16le" });
+        audio.set(m.sid, setInterval(() => audioFrame(m.sid), audioMs));
+      } else if (m.cmd === "audio-stop" && protocol >= 2) {
+        if (process.env.FAKE_IGNORE_STOP !== "1") stopAudio(m.sid, true);
+      }
       else if (m.cmd === "start") {
         if (process.env.FAKE_ERROR_CODE) {
           ev({ event: "error", sid: m.sid, code: Number(process.env.FAKE_ERROR_CODE), message: process.env.FAKE_ERROR_MESSAGE || "Error Domain=com.apple.ScreenCaptureKit.SCStreamErrorDomain Code=-3801 \"The user declined TCCs for application, window, display capture\"" });
@@ -132,7 +164,10 @@ if (cmd === "list-windows") {
           if (process.env.FAKE_SERVE_CRASH_AFTER && total >= Number(process.env.FAKE_SERVE_CRASH_AFTER)) process.exit(1);
         }, Number(process.env.FAKE_FRAME_MS || 30));
       } else if (m.cmd === "stop") {
-        if (process.env.FAKE_IGNORE_STOP !== "1") stop(m.sid, true);
+        if (process.env.FAKE_IGNORE_STOP !== "1") {
+          if (audio.has(m.sid)) stopAudio(m.sid, true);
+          else stop(m.sid, true);
+        }
       } else if (m.cmd === "key") {
         const c = caps.get(m.sid);
         if (c) c.forceKey = true;

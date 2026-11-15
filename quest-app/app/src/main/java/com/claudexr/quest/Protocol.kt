@@ -162,6 +162,12 @@ data class Calibrate(
 /** Binary frame on the /video socket: [0xC2][u8 idLen][id][u32 seq][u64 captureUs][u8 flags][Annex-B payload] */
 class VideoFrame(val streamId: String, val seq: Long, val ptsUs: Long, val keyframe: Boolean, val data: ByteArray)
 
+/**
+ * 0.4.1: Mac system audio on the /video socket: [0xC3][u8 idLen][id][u32 seq][u64 captureUs][u8 format][pcm].
+ * format 1 = PCM signed 16-bit little-endian, 48 kHz, stereo interleaved. No ack (outside the video flow control).
+ */
+class AudioBlock(val seq: Long, val captureUs: Long, val format: Int, val pcm: ByteArray)
+
 object Protocol {
   /** Returns null for unknown/malformed messages (they are ignored). */
   fun parse(text: String): BridgeMessage? =
@@ -310,6 +316,19 @@ object Protocol {
     val pts = bb.long
     val flags = bb.get().toInt()
     return VideoFrame(id, seq, pts, flags and 1 == 1, b.copyOfRange(2 + idLen + 13, b.size))
+  }
+
+  fun parseAudio(b: ByteArray): AudioBlock? {
+    if (b.size < 15 || b[0] != 0xC3.toByte()) return null
+    val idLen = b[1].toInt() and 0xff
+    if (b.size < 2 + idLen + 13) return null
+    val bb = ByteBuffer.wrap(b, 2 + idLen, 13)
+    val seq = bb.int.toLong() and 0xffffffffL
+    val captureUs = bb.long
+    val format = bb.get().toInt() and 0xff
+    val pcm = b.copyOfRange(2 + idLen + 13, b.size)
+    if (format != 1 || pcm.size % 4 != 0) return null // unknown format or a torn stereo frame: never play garbage
+    return AudioBlock(seq, captureUs, format, pcm)
   }
 
   fun videoHello(token: String): String = JSONObject().put("type", "video_hello").put("token", token).toString()

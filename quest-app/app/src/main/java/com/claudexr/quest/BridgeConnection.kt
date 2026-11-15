@@ -33,6 +33,8 @@ class BridgeConnection(
     private val onVideo: (VideoFrame) -> Unit,
     /** control socket lost (main thread): the app drops stream panels so no stale video is left behind */
     private val onLost: () -> Unit = {},
+    /** 0.4.1: Mac system audio blocks (called on the OkHttp thread: hand off, never block) */
+    private val onAudio: (AudioBlock) -> Unit = {},
 ) {
   enum class State {
     SEARCHING,
@@ -262,7 +264,9 @@ class BridgeConnection(
 
               override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 // Straight to the decoder thread (never via the main thread).
-                Protocol.parseVideo(bytes.toByteArray())?.let(onVideo)
+                val b = bytes.toByteArray()
+                if (b.isNotEmpty() && b[0] == 0xC3.toByte()) Protocol.parseAudio(b)?.let(onAudio)
+                else Protocol.parseVideo(b)?.let(onVideo)
               }
 
               override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

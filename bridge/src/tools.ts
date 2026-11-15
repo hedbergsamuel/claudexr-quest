@@ -43,6 +43,7 @@ export function statusLine(s: XrStatus | null): string {
   const d = s.display;
   const extra = d ? [`display: ${d.alwaysOn ? "always on" : "manual"}${d.suppressed ? " (stopped; restarts on reconnect/xr_stream display)" : ""}${d.dimEnabled ? `, dimming ${d.dimmed ? "ACTIVE" : "off now"}` : ""}; mic ${s.mic?.listening ? "listening" : "idle"}`] : [];
   if (s.helperMode && s.helperMode !== "shared") extra.push(`helper: ${s.helperMode}`);
+  if (s.audio && s.audio.state !== "off") extra.push(`audio: ${s.audio.state}${s.audio.state === "live" ? ` ${s.audio.kbps} kbit/s, dropped ${s.audio.dropped}` : ""}${s.audio.error ? ` (${s.audio.error})` : ""}`);
   if (s.mic?.panelOpen) extra.push('voice system/near-head "Röst" (push-to-talk panel in the headset; close with xr_panel close id:voice)');
   if (s.voice) extra.push(`voice: next spoken message goes ${{ channel: "to the voice channel", rewake: "to Claude at once (wakes the idle session)", working: "to Claude at the next tool step", queued: "with the next prompt (no session is working or waiting)" }[s.voice.route]}${s.voice.queued ? `, ${s.voice.queued} waiting` : ""}`);
   return [`XR connected: ${s.device} (app ${s.appVersion ?? "?"}), layout ${s.layoutMode}, ${s.openPanels.length} panel(s)`, ...panels, ...streams, ...extra].join("\n");
@@ -244,9 +245,9 @@ export function registerTools(server: McpServer, backend: XrBackend, opts: { dev
   server.registerTool(
     "xr_stream",
     {
-      description: "Mirror Mac to headset (view only). The Mac screen streams automatically while the headset is connected; window streams are added next to it (never replace it; max 4 streams). windows (list; [ask] = needs one tap on an XR approval card, [allowed] = no tap) | window id | display (restart) | stop [id|display|all] (no id = window streams only) | calibrate.",
+      description: "Mirror Mac to headset (view only). The Mac screen streams automatically while the headset is connected; window streams are added next to it (never replace it; max 4 streams). windows (list; [ask] = needs one tap on an XR approval card, [allowed] = no tap) | window id | display (restart) | stop [id|display|all|audio] (no id = window streams only) | calibrate | audio (Mac system audio to the headset, off until started; stop id:audio).",
       inputSchema: {
-        action: z.enum(["windows", "window", "display", "stop", "calibrate"]),
+        action: z.enum(["windows", "window", "display", "stop", "calibrate", "audio"]),
         id: z.union([z.number(), z.string()]).optional(),
         width: z.number().optional(),
         fps: z.number().int().min(5).max(60).optional(),
@@ -261,6 +262,14 @@ export function registerTools(server: McpServer, backend: XrBackend, opts: { dev
           const w = (r.data?.windows as { id: number; app: string; title?: string; access: string }[]) ?? [];
           const lines = w.map((x) => `${x.id} ${x.app}${x.title ? ` "${x.title.slice(0, 50)}"` : ""} [${x.access}]`);
           return say(lines.length ? [...lines, "[ask] = streaming needs one tap on an approval card in the headset (not a macOS permission). [allowed] = no tap."].join("\n") : "No windows.");
+        }
+        if (action === "audio") {
+          const r = await run({ op: "audio_start" });
+          return fail(r) ?? say("Mac audio starting (PCM 48 kHz stereo to the headset). Stop: xr_stream stop id:audio");
+        }
+        if (action === "stop" && id === "audio") {
+          const r = await run({ op: "audio_stop" });
+          return say(r.data?.stopped ? "Mac audio stopped" : "Mac audio was not running");
         }
         if (action === "stop") {
           const r = await run({ op: "stream_stop", streamId: id !== undefined ? String(id) : undefined });

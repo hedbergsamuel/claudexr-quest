@@ -1,4 +1,4 @@
-# claudexr-capture (Mac-hjälparen) 0.4.0
+# claudexr-capture (Mac-hjälparen) 0.4.1
 
 Litet Swift-CLI som ClaudeXR-bryggan startar för skärm-/fönsterspegling, kalibreringsmarkören,
 (valfri) taligenkänning på enheten och ljusstyrka för den inbyggda skärmen.
@@ -10,6 +10,12 @@ Litet Swift-CLI som ClaudeXR-bryggan startar för skärm-/fönsterspegling, kali
 
 ## Kommandon
 - `serve` (0.4.0): EN process äger alla strömmar och fönsterlistan; kommandon som JSON-rader på stdin, bildrutor märkta med ström-id på stdout. Bryggan använder den som standard (`helperMode: shared`, rollback `CLAUDEXR_HELPER_MODE=perStream`). Aldrig körd på riktig Mac än.
+- `serve`, 0.4.1 (protokoll 2): `{"cmd":"audio-start","sid":"au1","excludeBundles":[...]}` startar Macens systemljud
+  (ScreenCaptureKit `capturesAudio`, 48 kHz, 2 kanaler, utan hjälparens eget ljud). Ramarna har samma huvud som video
+  med `flags` 0x80 och innehåller PCM s16le 48 kHz stereo. `{"cmd":"audio-stop","sid":"au1"}` stoppar. Händelser:
+  `audio_started`, `audio_stopped`, `paused`/`resumed` (låst Mac), `error`. `serve_ready` säger nu `"protocol":2`;
+  en 0.4.0-hjälpare (protokoll 1) ignorerar `audio-start`, och därför skickar bryggan det bara till protokoll 2.
+  Kompilerad, **aldrig körd**. Obekräftat: att uteslutna appars ljud också utesluts, och SCK:s egen fördröjning.
 - `list-windows`: JSON-lista över fönster (kräver skärminspelningstillstånd).
 - `display-info`: geometri för huvudskärmen (punkter, pixlar, millimeter).
 - `stream --window ID | --display ID [--fps --bitrate --max-width --exclude-bundles]`: H.264 på stdout,
@@ -19,6 +25,11 @@ Litet Swift-CLI som ClaudeXR-bryggan startar för skärm-/fönsterspegling, kali
 - `brightness get [--display ID]` -> `{"brightness":0.62,"displayId":N}`; `brightness set <0..1>` -> `{"ok":true,"brightness":v}`.
   Bara inbyggd skärm (DisplayServices, reserv IOKit). Annars `{"error":"unsupported"}` och exit 1. `set` ändrar den RIKTIGA
   ljusstyrkan och körs aldrig av tester.
+
+## 0.4.1
+Ny kod (ljud), så hjälparen **måste byggas om** för ljud i headsetet: `./build.sh`. Ny cdhash betyder att
+"Skärm- och systemljudsinspelning" kan behöva tillåtas på nytt (ta bort den gamla posten och lägg till igen vid -3801).
+Bryggan 0.4.1 fungerar med en 0.4.0-hjälpare (allt utom ljud) och visar då ett tydligt fel för `xr_stream audio`.
 
 ## 0.3.1
 Ingen kodändring: bara versionssträngen i Info.plist och denna rubrik. Du behöver INTE bygga om hjälparen (en ombyggnad ger ny cdhash och kräver ny Skärminspelning-tillåtelse); den installerade 0.3.0-binären fungerar oförändrad.

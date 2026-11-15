@@ -26,7 +26,7 @@ Användaren bär headsetet och ser paneler i rummet. Skärmen och terminalen syn
 | Längre genomgång | `xr_present slides` |
 | Status/checklista | `xr_present checklist`; tabelldata `table` |
 | Webbapp under utveckling | `xr_show type:url frame:phone|tablet|laptop` (localhost går bra; starta dev-servern med `--host`) |
-| Se ett Mac-fönster skarpt | `xr_stream action:windows`, sedan `action:window id:N`. Macens skärm strömmas redan automatiskt och ersätts aldrig av fönsterpaneler. `[ask]` = ett tryck på XR-kortet behövs (inte macOS-tillstånd). `xr_panel action:close id:all` stänger allt UTOM Macens skärm (den stängs aldrig utan uttrycklig begäran; `id:everything` stänger även den). Fasta panel-id: Macens skärm = `display`, fönster = `win-<fönster-id>`. Bioskärm: `xr_panel action:screen preset:cinema|bigger|smaller|farther|closer|reset` |
+| Se ett Mac-fönster skarpt | `xr_stream action:windows`, sedan `action:window id:N`. Macens skärm strömmas redan automatiskt och ersätts aldrig av fönsterpaneler. `[ask]` = ett tryck på XR-kortet behövs (inte macOS-tillstånd). `xr_panel action:close id:all` stänger allt UTOM Macens skärm (den stängs aldrig utan uttrycklig begäran; `id:everything` stänger även den). Fasta panel-id: Macens skärm = `display`, fönster = `win-<fönster-id>`. Bioskärm: `xr_panel action:screen preset:cinema|bigger|smaller|farther|closer|reset`. Macens ljud i headsetet (bara när användaren ber om det): `xr_stream action:audio`, stopp `action:stop id:audio` |
 | Uppdatera en befintlig panel | `xr_present id:<panel>` eller `xr_panel action:update` |
 
 ## Datamallar för xr_present (fält med ? är valfria)

@@ -13,8 +13,8 @@ android {
     // HorizonOS is Android 14 (API level 34)
     minSdk = 34
     targetSdk = 34
-    versionCode = 5
-    versionName = "0.4.0"
+    versionCode = 6
+    versionName = "0.4.1"
   }
 
   packaging { resources.excludes.add("META-INF/LICENSE") }

@@ -4,8 +4,8 @@
 <dict>
   <key>CFBundleIdentifier</key><string>com.claudexr.capture</string>
   <key>CFBundleName</key><string>ClaudeXR Capture</string>
-  <key>CFBundleVersion</key><string>0.4.0</string>
-  <key>CFBundleShortVersionString</key><string>0.4.0</string>
+  <key>CFBundleVersion</key><string>0.4.1</string>
+  <key>CFBundleShortVersionString</key><string>0.4.1</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>ClaudeXR transcribes push-to-talk audio from your headset locally on this Mac.</string>
 </dict>
 </plist>

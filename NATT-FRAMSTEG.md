@@ -1,5 +1,19 @@
 **Röstleverans 0.4.0 verifierad (2026-11-15):** Quest-appen assembleDebug OK (ej installerad), bridge `npm test` 152 pass/0 fail/2 skipped, typecheck rent. Nästa steg: röstkanal channelAlive-mätning, audio-start i serve, punkt 8 med hzdb/metavr enligt bugs/META-MCP-UNDERSOKNING.md.
 
+**0.4.1 KLAR i kod (2026-11-15):** punkt 3 (röstkanal opt-in, mätt: startas inte som standard; svensk svarsmatchning), 7 (Macens ljud: audio-start i serve, PCM över /video, AudioTrack), 8 (verktygsval adb|metavr|hzdb, `quest-cmds`, trådat läge dokumenterat, reverse via hzdb OBEKRÄFTAT), 6 (InputRouter bakom InputGate, NullInputSink, ingen CGEvent). Version 0.4.1 överallt. Brygga `npm test` 170 pass/0 fail/2 skipped, typecheck rent, Quest assembleDebug + 22 JVM-tester gröna, hjälparen kompilerad (aldrig körd). Detaljer: `bugs/CHANGELOG-0.4.1.md`, logg: `.natt-state/UTVECKLING-LOGG.md`.
+
+**Nästa steg:** allt kvarvarande kräver hårdvara. Gör listan "Kräver ägaren 0.4.1" nedan i ordning. Därefter i kod: knapp + pekar-ray i Quest-appen för input_gate/pointer (punkt 6, efter headset-test), CGEvent-mottagare i hjälparen (efter godkänd Hjälpmedel-behörighet), Opus om PCM visar sig för tungt, punkt 9 (närvaroläge) efter kamerans go/no-go.
+
+### Kräver ägaren 0.4.1
+1. Bygg och installera hjälparen (`cd mac-helper && ./build.sh`), tillåt "Skärm- och systemljudsinspelning" på nytt. Kör sedan `xr_stream action:audio` medan musik spelar: hörs ljudet, hur stor är fördröjningen mot bilden, glapp? Prova att låsa Macen (ljudet ska tystna).
+2. Bekräfta om ljud från uteslutna appar (t.ex. Mail/Meddelanden-ljud) hörs i headsetet. Om ja: säg till, då behövs ett filter.
+3. Bygg/installera bryggan och Quest-appen 0.4.1 (`quest-cmds` skriver ut installationskommandot för valt verktyg).
+4. Installera om hookarna (`install-hooks --dry-run`, granska, sedan skarpt) för att få `voicewait`/direktväckning; prova att säga något när Claude är ledig.
+5. Vill du ha röstkanalen: `"voice": {"channel": true}` och starta Claude Code med `--dangerously-load-development-channels server:claudexr-voice`; titta i daemonloggen på raden "voice channel: client capabilities".
+6. Kör `hzdb adb --help` (eller `metavr adb --help`) och se om `reverse` finns. Om ja: prova `quest-cmds --tool hzdb --wired` med kabel.
+7. En kvarlämnad testdaemon från en tidigare körning (pid 5118, `node --import tsx src/index.ts` i ClaudeXR-natt/bridge, portar 48842/48843) kan ge portkrockar i testerna: `kill 5118`. Det är INTE den riktiga bryggan.
+8. Godkänn eller avböj nästa steg för punkt 6: CGEvent-styrning kräver Hjälpmedel-behörighet för hjälparen.
+
 # Nattens framsteg (ClaudeXR 0.4.0)
 
 Uppdateras löpande. Nästa körning: läs den här filen och `git log --oneline`, fortsätt där det står "Nästa steg".

@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 /** Root of the "Meta XR" folder (bridge/dist/src -> bridge/src -> root). */
 export const PROJECT_ROOT = path.resolve(here, fs.existsSync(path.join(here, "..", "package.json")) ? "../.." : "../../..");
 
-export const BRIDGE_VERSION = "0.4.0";
+export const BRIDGE_VERSION = "0.4.1";
 
 /** "~/x" -> "<home>/x" (config paths are not passed through a shell, so "~" is never expanded otherwise). */
 export function expandHome(p: string): string;

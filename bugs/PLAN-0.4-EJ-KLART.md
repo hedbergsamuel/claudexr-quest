@@ -1,5 +1,9 @@
 # Det som INTE är klart i 0.4.0, och varför (fas 2)
 
+> **Uppdatering 0.4.1 (2026-11-15):** punkt 3, 7 och 8 är byggda i kod och punkt 6 är inkopplad bakom grinden
+> (utan CGEvent). Inget av det är bevisat i headset eller på riktig Mac. Se `bugs/CHANGELOG-0.4.1.md`. Texten nedan
+> gäller 0.4.0.
+
 Skriven av nattutvecklaren (fas 2). Principen: hellre "inte klart, beror på X" än något halvbra.
 
 ## Punkt 3: röstleverans (BUG-6b9a81, BUG-8324e4, BUG-82a49d, BUG-36fba1): EJ BYGGD

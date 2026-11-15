@@ -153,6 +153,7 @@ export function loadConfig(): XrConfig {
       vocabulary: raw.voice?.vocabulary,
       corrections: raw.voice?.corrections,
       previewTimeoutMs: raw.voice?.previewTimeoutMs ?? 120_000,
+      channel: process.env.CLAUDEXR_VOICE_CHANNEL ? process.env.CLAUDEXR_VOICE_CHANNEL === "1" : raw.voice?.channel === true,
     },
     xrPermissions: process.env.CLAUDEXR_XR_PERMISSIONS ? process.env.CLAUDEXR_XR_PERMISSIONS !== "0" : raw.xrPermissions ?? true,
     permissionTimeoutS: Number(process.env.CLAUDEXR_PERMISSION_TIMEOUT || raw.permissionTimeoutS || 120),

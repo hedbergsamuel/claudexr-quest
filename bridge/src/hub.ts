@@ -362,7 +362,7 @@ export class XrHub {
         dimEnabled: !!this.brightness,
       },
       mic: { listening: this.voice.size > 0, panelOpen: this.voicePanelOpen },
-      voice: this.voiceRouter.info(),
+      voice: { ...this.voiceRouter.info(), channelEnabled: !!this.o.config.voice.channel },
       helperMode: this.streams.helperMode(),
       streams: [...this.streams.streams.values()].map((s) => ({
         streamId: s.streamId,
@@ -457,6 +457,8 @@ export class XrHub {
       case "emergency":
         return this.emergency();
       case "voice_take": {
+        // 0.4.1: off by default. A channel that is not enabled never marks itself alive and never takes messages.
+        if (!this.o.config.voice.channel) return { status: "answered", data: { messages: [], disabled: true } };
         const items = this.voiceInbox.take();
         return { status: "answered", data: { messages: items.map((m) => ({ id: m.id, text: m.text })) } };
       }

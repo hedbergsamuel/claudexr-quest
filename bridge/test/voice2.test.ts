@@ -78,7 +78,7 @@ test("push-to-talk with no question open: preview -> Skicka -> queued, delivered
 
 test("with the voice channel polling, a confirmed message is 'sent' and handed to the channel (not queued for the hook)", async () => {
   const stt = fakeStt();
-  const b = await startBridge(nextPort(), stt.env);
+  const b = await startBridge(nextPort(), { ...stt.env, CLAUDEXR_VOICE_CHANNEL: "1" }); // 0.4.1: the channel is opt-in
   const sim = await startSim(b);
   await mediaReady(sim);
   try {

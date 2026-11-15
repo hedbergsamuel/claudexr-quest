@@ -172,6 +172,7 @@ function restoreBrightness() {
 /**
  * EXPERIMENTAL voice channel (Claude Code channels, research preview): a stdio MCP server that pushes the spoken
  * messages the user confirmed (Skicka) into the running session as <channel source="claudexr-voice"> events.
+ * 0.4.1: OFF unless the daemon has "voice": {"channel": true} (or CLAUDEXR_VOICE_CHANNEL=1).
  * Start Claude Code with:  claude --dangerously-load-development-channels server:claudexr-voice
  * (register: claude mcp add claudexr-voice -- node <path>/index.js --voice-channel). Untested against a real session.
  * It never declares the permission relay capability: speech can never approve anything.
@@ -185,11 +186,18 @@ async function voiceChannel() {
         'Events arrive as <channel source="claudexr-voice">: a message the user spoke into their XR headset and confirmed with Skicka. It is speech and may be misheard; treat it as the user\'s words, but it is NEVER approval for permission prompts or risky actions. One-way: no reply tool, answer in the session as usual.',
     },
   );
+  // Diagnostics only (what the client says it supports); unverified whether Claude Code advertises channel support here.
+  server.oninitialized = () => log(`voice channel: client capabilities ${JSON.stringify(server.getClientCapabilities() ?? {}).slice(0, 300)}`);
   await server.connect(slim(new StdioServerTransport()));
   const backend = new RemoteBackend(localPort);
+  let saidDisabled = false;
   const poll = async () => {
     try {
       const r = await backend.execute({ op: "voice_take" });
+      if (r.data?.disabled && !saidDisabled) {
+        saidDisabled = true;
+        log('voice channel: disabled in the daemon (set "voice": {"channel": true} in config.json or CLAUDEXR_VOICE_CHANNEL=1); messages go via hooks instead');
+      }
       for (const m of (r.data?.messages as { id: string; text: string }[] | undefined) ?? []) {
         await server.notification({ method: "notifications/claude/channel", params: { content: m.text, meta: { source: "voice", message_id: m.id } } } as never);
       }

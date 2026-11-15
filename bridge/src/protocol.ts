@@ -188,7 +188,7 @@ export interface XrStatus {
   display?: { alwaysOn: boolean; suppressed: boolean; approved: boolean; dimmed: boolean; dimEnabled: boolean };
   mic?: { listening: boolean; panelOpen?: boolean };
   /** 0.4.0: spoken messages waiting for Claude and where the next one would go (see voiceroute.ts) */
-  voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number };
+  voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number; channelEnabled?: boolean };
   /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */
   helperMode?: string;
   bridge: { version: string; host: string; port: number; localPort: number; lanAddresses: string[]; mdnsType: string; pid: number; tlsFingerprint: string };

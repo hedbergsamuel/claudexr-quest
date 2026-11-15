@@ -35,6 +35,13 @@ export interface VoiceConfig {
   vocabulary?: string;
   /** 0.4.0: whole-word replacements applied to the transcript before the preview (lower-case key -> replacement). */
   corrections?: Record<string, string>;
+  /**
+   * 0.4.1: the experimental voice channel (`--voice-channel`) may take messages only when this is true (default false).
+   * Reason: a channel process registered as an ordinary MCP server is started by Claude Code even WITHOUT
+   * `--dangerously-load-development-channels`; it would then poll, empty the inbox into notifications the session
+   * ignores, while the headset says "Skickat". Opt in with "voice": {"channel": true} or CLAUDEXR_VOICE_CHANNEL=1.
+   */
+  channel?: boolean;
 }
 
 /** Context for whisper: the words this user actually says to ClaudeXR. Kept short (it costs decoding time). */
@@ -52,6 +59,10 @@ export const DEFAULT_CORRECTIONS: Record<string, string> = {
   klåd: "Claude",
   klod: "Claude",
   claud: "Claude",
+  klaud: "Claude",
+  hedsetet: "headsetet",
+  hedset: "headset",
+  hedsettet: "headsetet",
 };
 
 /** Whole-word, case-insensitive replacement (Unicode letters count as word characters). */
@@ -315,15 +326,24 @@ export function matchLocalCommand(text: string): LocalCommand | null {
 }
 
 const ORDINALS: string[][] = [
-  ["1", "ett", "en", "etta", "första", "one", "first", "alternativ ett", "option one"],
-  ["2", "två", "tvåa", "andra", "two", "second", "alternativ två", "option two"],
-  ["3", "tre", "trea", "tredje", "three", "third", "alternativ tre", "option three"],
-  ["4", "fyra", "fyra", "fjärde", "four", "fourth", "alternativ fyra", "option four"],
+  ["1", "ett", "en", "etta", "ettan", "första", "den första", "det första", "one", "first", "the first", "the first one"],
+  ["2", "två", "tvåa", "tvåan", "andra", "den andra", "det andra", "two", "second", "the second", "the second one"],
+  ["3", "tre", "trea", "trean", "tredje", "den tredje", "det tredje", "three", "third", "the third", "the third one"],
+  ["4", "fyra", "fyran", "fjärde", "den fjärde", "det fjärde", "four", "fourth", "the fourth", "the fourth one"],
 ];
+
+/**
+ * 0.4.1: an answer without polite filler ("ja", "okej", "tack", "nu"), so "okej, nummer två tack" and
+ * "ja det funkar" are understood. Still the whole utterance: nothing is picked out of a longer sentence.
+ */
+export function stripFiller(n: string): string {
+  return n.replace(FILLER_START, "").replace(FILLER_END, "").trim();
+}
 
 /** Which option was meant: by number word, or by the option's label being said. null = free answer. */
 export function matchOption(text: string, labels: string[]): number | null {
-  const n = normalize(text).replace(/^(nummer|number|alternativ|option) /, "");
+  const raw = normalize(text);
+  const n = stripFiller(raw).replace(/^(nummer|number|alternativ|option|alternativet) /, "");
   for (let i = 0; i < Math.min(labels.length, 4); i++) if (ORDINALS[i].includes(n)) return i;
   const hits = labels.map((l, i) => ({ i, l: normalize(l) })).filter(({ l }) => l.length >= 2 && (n === l || n.includes(l)));
   if (hits.length === 1) return hits[0].i;
@@ -333,17 +353,22 @@ export function matchOption(text: string, labels: string[]): number | null {
 }
 
 export function matchVerdict(text: string): "works" | "broken" | null {
-  const n = normalize(text);
-  if (/^(det )?(funkar|fungerar|fungerade|funkade|ser bra ut|works|it works|working|looks good|ok|okej)( bra)?$/.test(n)) return "works";
-  if (/^(det )?(funkar inte|fungerar inte|trasig|trasigt|fel|broken|it's broken|its broken|doesn't work|does not work|not working)$/.test(n)) return "broken";
+  const raw = normalize(text);
+  // "nej" first: "nej det funkar inte" is broken, "nej det funkar" is ambiguous and stays a free answer.
+  const no = /^nej /.test(raw);
+  const n = stripFiller(raw.replace(/^nej /, ""));
+  const broken = /^(det |den )?(funkar inte|fungerar inte|funkade inte|fungerade inte|trasig|trasigt|är trasig|är trasigt|fel|blev fel|broken|it's broken|its broken|doesn't work|does not work|not working|it doesn't work)( alls)?$/.test(n);
+  if (broken) return "broken";
+  if (no) return null;
+  if (/^(det |den )?(funkar|fungerar|fungerade|funkade|ser bra ut|ser bra ut nu|works|it works|working|looks good|ok|okej)( bra| fint| nu)?$/.test(n)) return "works";
   return null;
 }
 
 export function matchAB(text: string): "a" | "b" | "neither" | null {
-  const n = normalize(text);
-  if (/^(a|alternativ a|option a|den första|the first one|första)$/.test(n)) return "a";
-  if (/^(b|be|alternativ b|option b|den andra|the second one|andra)$/.test(n)) return "b";
-  if (/^(ingen|ingen av dem|neither|none)$/.test(n)) return "neither";
+  const n = stripFiller(normalize(text));
+  if (/^(a|alternativ a|option a|den första|the first one|första|ettan)$/.test(n)) return "a";
+  if (/^(b|be|alternativ b|alternativ be|option b|den andra|the second one|andra|tvåan)$/.test(n)) return "b";
+  if (/^(ingen|ingen av dem|ingen av dom|ingetdera|inget av dem|neither|none|none of them)$/.test(n)) return "neither";
   return null;
 }
 

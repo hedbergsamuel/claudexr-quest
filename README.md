@@ -1,4 +1,4 @@
-# ClaudeXR v0.3.1: Claude Code i ditt rum (Meta Quest 3)
+# ClaudeXR v0.4.1: Claude Code i ditt rum (Meta Quest 3)
 
 Claude Code på din Mac kan visa kort, paneler, förhandsvisningar, dashboards och skarpa kopior av Mac-fönster i ditt rum (passthrough). Du svarar genom att peka och nypa, eller genom att hålla in mikrofonknappen och tala. Svaren går tillbaka till Claude som verktygsresultat.
 
@@ -31,7 +31,7 @@ Claude Code på din Mac kan visa kort, paneler, förhandsvisningar, dashboards o
 
 ```bash
 # 1) Bryggan som daemon
-cd "/Users/<användare>/Downloads/Meta XR/bridge"
+cd bridge
 npm ci && npm run build && npm test
 npm run install-daemon      # kopierar till ~/Library/Application Support/ClaudeXR/bridge och startar launchd-agenten
 tail -f ~/Library/Logs/ClaudeXR/bridge.log   # loggar (Ctrl-C för att sluta titta)
@@ -51,11 +51,11 @@ mkdir -p ~/.claude/skills && cp -R ../claude-config/skills/xr-presenter ../claud
 # 4) Quest-appen (Android Studios JDK)
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
-cd "/Users/<användare>/Downloads/Meta XR/quest-app" && ./gradlew :app:assembleDebug
+cd ../quest-app && ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # 5) Mac-hjälparen (spegling, kalibrering, Apple-tal)
-cd "/Users/<användare>/Downloads/Meta XR/mac-helper" && swift build -c release
+cd ../mac-helper && swift build -c release
 
 # 6) Röst (lokal taligenkänning)
 brew install whisper-cpp

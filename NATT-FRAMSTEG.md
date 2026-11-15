@@ -1,3 +1,5 @@
+**Röstleverans 0.4.0 verifierad (2026-11-15):** Quest-appen assembleDebug OK (ej installerad), bridge `npm test` 152 pass/0 fail/2 skipped, typecheck rent. Nästa steg: röstkanal channelAlive-mätning, audio-start i serve, punkt 8 med hzdb/metavr enligt bugs/META-MCP-UNDERSOKNING.md.
+
 # Nattens framsteg (ClaudeXR 0.4.0)
 
 Uppdateras löpande. Nästa körning: läs den här filen och `git log --oneline`, fortsätt där det står "Nästa steg".

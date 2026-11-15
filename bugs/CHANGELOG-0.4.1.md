@@ -34,6 +34,8 @@ låtsashjälpare och ett simulerat headset, och Quest-appen är byggd (inte inst
   fortsätter skicka efter stopp. Ljudet stoppas vid nödstopp och när headsetet försvinner, och är **av tills det
   startas**.
 - **MCP:** `xr_stream action:audio`, stopp `action:stop id:audio`. `xr_status`/`xr_panel list` visar `audio: live N kbit/s`.
+  En varning från hjälparen (t.ex. oväntat ljudformat, då släpps alla block) syns där som `(warning: …)` och loggas som fel,
+  så att "live 0 kbit/s" aldrig blir en tyst gåta.
 - **Quest:** `Protocol.parseAudio` och `MacAudioPlayer`. Uppspelningen använder AudioTrack i `PERFORMANCE_MODE_LOW_LATENCY`
   med en kö på 8 block (det äldsta släpps) och frisläpps efter 1,5 s tystnad. Den är inkopplad i `BridgeConnection`
   och `MainActivity`, och kön töms i `onPause`.
@@ -97,14 +99,20 @@ Bryggan 0.4.1, Quest-appen 0.4.1 (versionCode 6), Mac-hjälparen 0.4.1 (Info.pli
 
 ## Testat / inte testat
 **Testat (automatiskt, 2026-11-15):**
-- Bryggan: `npm run typecheck` rent. `timeout 590 npm test`: 172 tester, **170 pass, 0 fail, 0 cancelled, 2 skipped**
-  (~160 s). Nya testfiler: `voice-041`, `audio-041`, `devicetool-041`, och utökade `input`, `voice2` och `streams-multi-040`.
+- Bryggan: `npm run typecheck` rent. `timeout 590 npm test`: 173 tester, **171 pass, 0 fail, 0 cancelled, 2 skipped**
+  (~160 s). Nya testfiler: `voice-041`, `audio-041` och `devicetool-041`. Utökade: `input` och `voice2` (kanalen
+  slås nu på uttryckligen). `streams-multi-040` är oförändrad men faller inte längre ibland (se Övrigt).
+- Kända falska fel: en kvarlämnad testdaemon från en tidigare körning lyssnar på port 48842/48843 (pid 5118, se Kräver
+  ägaren). När ett test slumpar fram den porten får det "missing or wrong token". Det gäller ungefär var femte körning
+  och försvinner när processen är avslutad.
 - Quest: `./gradlew :app:assembleDebug :app:testDebugUnitTest --offline` grönt, med 22 JVM-tester (ProtocolTest 12
   inklusive ljudblock, PlacementPlanner 9, CalibrationMath 1).
 - Mac-hjälparen: `./build.sh --build-path .natt-state/helper-build` kompilerar och signeras ad hoc. **Den har aldrig körts.**
 
 **Inte testat:**
 - Allt i headsetet: ljuduppspelning, fördröjning och glapp, AudioTrack i låg latens på Quest 3, att `onPause` tystar.
+  Lyssna särskilt efter klick eller glapp vid videons nyckelbildrutor. Ljudblock släpps när mer än 64 KB väntar i
+  `/video`-socketen, och en stor IDR över Wi-Fi kan ligga där. Om det hörs, höj `AUDIO_MAX_BUFFERED` i `hub.ts`.
 - Mac-hjälparens `audio-start` på riktig Mac: SCK-ljud, behörighet, format (float32 48 kHz förväntas), om uteslutna
   appars ljud verkligen utesluts, och paus vid låst skärm.
 - Röstkanalen mot en riktig Claude Code-session, och vilka capabilities Claude Code annonserar.

@@ -135,6 +135,12 @@ if (cmd === "list-windows") {
           continue;
         }
         ev({ event: "audio_started", sid: m.sid, rate: 48000, channels: 2, format: "s16le" });
+        if (process.env.FAKE_AUDIO_WARN) {
+          // like AudioCapture.swift with an unexpected format: one warning, then every block is dropped
+          ev({ event: "warning", sid: m.sid, message: "unexpected audio format 44100.0 Hz, flags 9, 32 bit: dropped" });
+          audio.set(m.sid, setInterval(() => {}, 1000));
+          continue;
+        }
         audio.set(m.sid, setInterval(() => audioFrame(m.sid), audioMs));
       } else if (m.cmd === "audio-stop" && protocol >= 2) {
         if (process.env.FAKE_IGNORE_STOP !== "1") stopAudio(m.sid, true);

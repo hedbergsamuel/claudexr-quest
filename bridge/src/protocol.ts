@@ -194,7 +194,7 @@ export interface XrStatus {
   /** 0.4.0: spoken messages waiting for Claude and where the next one would go (see voiceroute.ts) */
   voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number; channelEnabled?: boolean };
   /** 0.4.1: Mac system audio */
-  audio?: { state: string; frames: number; dropped: number; kbps: number; error?: string };
+  audio?: { state: string; frames: number; dropped: number; kbps: number; error?: string; warning?: string };
   /** 0.4.1: input gate (punkt 6); sink "null" = nothing is sent to the Mac */
   input?: { enabled: boolean; sensitive: boolean; sink: string; delivered: number; dropped: number; lastOff?: string };
   /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */

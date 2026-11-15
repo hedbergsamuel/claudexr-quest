@@ -1044,6 +1044,7 @@ export class XrHub {
       dropped: this.audioDropped,
       kbps: a ? Math.round((a.bytesOut * 8) / secs / 1000) : 0,
       ...(this.audioLastError && !a ? { error: this.audioLastError } : {}),
+      ...(a?.warning ? { warning: a.warning } : {}),
     };
   }
 

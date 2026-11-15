@@ -145,3 +145,22 @@ test("ljudfel från hjälparen syns i status och stoppar ljudet", async () => {
     await b.close();
   }
 });
+
+test("varning från hjälparen (oväntat ljudformat) syns i status och xr_panel list i stället för tyst 0 kbit/s", async () => {
+  const b = await startBridge(nextPort(), { FAKE_AUDIO_WARN: "1", CLAUDEXR_DISPLAY_APPROVAL: "never" });
+  const sim = await startSim(b);
+  try {
+    await b.call("xr_stream", { action: "audio" });
+    let st: { audio: { state: string; warning?: string } } = await b.local("/status");
+    for (let i = 0; i < 40 && !st.audio.warning; i++) {
+      await sleep(50);
+      st = await b.local("/status");
+    }
+    assert.match(st.audio.warning ?? "", /unexpected audio format 44100/);
+    assert.match((await b.call("xr_panel", { action: "list" })).text, /audio: live .*\(warning: unexpected audio format/);
+    assert.ok(fs.readFileSync(path.join(b.bugsDir, "reports.jsonl"), "utf8").includes("unexpected audio format"), "loggas som fel");
+  } finally {
+    sim.close();
+    await b.close();
+  }
+});

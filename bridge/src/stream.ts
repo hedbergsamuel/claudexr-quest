@@ -101,6 +101,8 @@ export interface AudioHandle {
   bytesOut: number;
   lastFrameAt: number;
   error?: string;
+  /** a warning from the helper (e.g. unexpected audio format: every block is dropped) */
+  warning?: string;
 }
 
 /**
@@ -458,6 +460,11 @@ export class StreamManager {
 
   private onAudioEvent(ev: HelperEvent) {
     const a = this.audio!;
+    if (ev.event === "warning") {
+      a.warning = String(ev.message ?? "warning").slice(0, 200);
+      logError("ljud", `Mac-hjälparen: ${a.warning}`);
+      return;
+    }
     if (ev.event === "audio_started" && a.state === "starting") {
       a.state = "live";
       this.cb.onAudioState?.("live");

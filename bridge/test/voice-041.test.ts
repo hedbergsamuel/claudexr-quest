@@ -33,16 +33,18 @@ test("mätning: en ny router utan kanal-poll väljer aldrig 'channel'; bara en p
 
 test("konfig: röstkanalen är av som standard och slås på med CLAUDEXR_VOICE_CHANNEL=1", () => {
   const old = process.env.CLAUDEXR_VOICE_CHANNEL;
+  const oldDir = process.env.CLAUDEXR_STATE_DIR;
   try {
+    process.env.CLAUDEXR_STATE_DIR = tmpDir(); // aldrig användarens riktiga ~/.claudexr
     delete process.env.CLAUDEXR_VOICE_CHANNEL;
-    // config.json i användarens tillståndsmapp kan sätta värdet; standardvärdet är i så fall bara false om filen saknar det
-    const c = loadConfig();
-    assert.equal(typeof c.voice.channel, "boolean");
+    assert.equal(loadConfig().voice.channel, false);
     process.env.CLAUDEXR_VOICE_CHANNEL = "1";
     assert.equal(loadConfig().voice.channel, true);
     process.env.CLAUDEXR_VOICE_CHANNEL = "0";
     assert.equal(loadConfig().voice.channel, false);
   } finally {
+    if (oldDir === undefined) delete process.env.CLAUDEXR_STATE_DIR;
+    else process.env.CLAUDEXR_STATE_DIR = oldDir;
     if (old === undefined) delete process.env.CLAUDEXR_VOICE_CHANNEL;
     else process.env.CLAUDEXR_VOICE_CHANNEL = old;
   }

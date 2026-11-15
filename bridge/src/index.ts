@@ -17,6 +17,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { LocalBackend, RemoteBackend, XrBackend, httpJson, readLocalToken } from "./backend.js";
 import { registerTools } from "./tools.js";
 import { DEFAULT_PORT, localPortFor } from "./protocol.js";
+import { deviceCommand, parseDeviceTool, shellLine, DEVICE_TOOLS, type DeviceAction } from "./devicetool.js";
 import { log } from "./log.js";
 import { BRIDGE_VERSION, XrConfig, loadConfig, stateDir } from "./config.js";
 import { BugStore } from "./devmode.js";
@@ -210,6 +211,31 @@ async function voiceChannel() {
   log("voice channel running (polling the daemon)");
 }
 
+/**
+ * `quest-cmds [--tool adb|metavr|hzdb] [--wired] [--apk path] [--ip addr] [--url wss://...]` (0.4.1, punkt 8):
+ * PRINTS the commands for installing and starting the Quest app with the chosen tool. Runs nothing.
+ * Tool: --tool, else CLAUDEXR_DEVICE_TOOL / "deviceTool" in config.json, else adb.
+ */
+function questCmds() {
+  const opt = (k: string) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
+  const given = opt("--tool");
+  const tool = given !== undefined ? parseDeviceTool(given) : loadConfig().deviceTool;
+  if (!tool) {
+    console.log(`Okänt verktyg "${given}". Välj: ${DEVICE_TOOLS.join(" | ")}`);
+    process.exitCode = 2;
+    return;
+  }
+  const wired = argv.includes("--wired");
+  const o = { apk: opt("--apk"), ip: opt("--ip"), bridgeUrl: opt("--url"), port };
+  const steps: DeviceAction[] = wired ? ["devices", "install", "reverse", "launch-wired"] : ["devices", "install", "launch"];
+  console.log(`# ClaudeXR: Quest-kommandon med ${tool}${wired ? " (trådat läge via USB)" : " (Wi-Fi/LAN)"}. Inget körs härifrån; kör raderna själv i quest-app/.`);
+  for (const a of steps) {
+    const c = deviceCommand(tool, a, o);
+    console.log(`${c.confirmed ? "" : "# OBEKRÄFTAT: "}${shellLine(c.argv)}${c.note ? `   # ${c.note}` : ""}`);
+  }
+  if (wired) console.log(`# Avsluta trådat läge: ${shellLine(deviceCommand(tool, "reverse-remove", o).argv)}`);
+}
+
 /** `voice-bench <file.wav>`: time the configured speech engine on a WAV file (no headset needed). */
 async function voiceBench() {
   const config = loadConfig();
@@ -311,6 +337,7 @@ async function main() {
   if (cmd === "xr") return xrCommand();
   if (cmd === "restore-brightness") return restoreBrightness();
   if (cmd === "voice-bench") return voiceBench();
+  if (cmd === "quest-cmds") return questCmds();
   if (cmd === "status") {
     const s = await httpJson("GET", localPort, "/status").catch(() => null);
     console.log(s ? JSON.stringify(s, null, 2) : "Daemon is not running.");

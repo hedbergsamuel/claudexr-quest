@@ -115,6 +115,20 @@ Starta sedan ClaudeXR på headsetet och parkoppla (se nedan).
 4. **Bygg och installera** med kommandona i snabbstarten. Appen finns under **Bibliotek → Okända källor → ClaudeXR**.
 5. **Tillstånd** som appen frågar efter: rumsskanning (placering mot väggar), kamera (bara vid skärmkalibrering) och mikrofon (bara för tryck-och-tala).
 
+### Verktyg för headsetet: adb, metavr eller hzdb (0.4.1)
+Bryggan kör aldrig dessa program själv. Den skriver ut rätt kommandon för det verktyg du valt:
+
+```bash
+node dist/src/index.js quest-cmds                 # verktyg enligt config.json "deviceTool", annars adb
+node dist/src/index.js quest-cmds --tool metavr   # Meta VR CLI (behöver ingen separat adb)
+node dist/src/index.js quest-cmds --tool hzdb --wired   # trådat läge via USB-kabeln
+```
+
+- Val: `--tool`, annars `CLAUDEXR_DEVICE_TOOL`, annars `"deviceTool": "adb" | "metavr" | "hzdb"` i `~/.claudexr/config.json`, annars `adb`.
+- `metavr` och `hzdb` är samma program (hzdb är det gamla namnet, kvar som alias). Installation (`app install -r`), start (`app launch`, eller `shell am start` när en `bridge_url` ska med) och Wi-Fi (`device wifi enable`, `device connect <ip>`) står i Metas dokumentation.
+- **OBEKRÄFTAT: `reverse` via metavr/hzdb.** Metas sida dokumenterar inte `reverse`. Bara en kopia av hzdb-skillen från tredje part listar `hzdb adb reverse`. Raden skrivs därför ut som `# OBEKRÄFTAT:`. Kontrollera med `hzdb adb --help` innan du litar på den. Reservväg: vanlig `adb reverse`. Underlag: `bugs/META-MCP-UNDERSOKNING.md`.
+- **Trådat läge** (`--wired`): `reverse tcp:47800 tcp:47800` gör headsetets `127.0.0.1:47800` till Macens port 47800. Sedan startas appen med `bridge_url=wss://127.0.0.1:47800/headset`, eftersom Bonjour inte fungerar över USB. Certifikatet är fastnålat på fingeravtrycket, så värdnamnet borde inte spela någon roll (obekräftat i headsetet). Begränsning: förhandsvisnings-URL:er som bryggan skriver om till "adressen headsetet anslöt till" blir också 127.0.0.1, och bara port 47800 vidarebefordras. Avsluta med `reverse --remove tcp:47800`.
+
 ### Parkoppling (första gången)
 1. Starta appen. Den hittar Macen via Bonjour och visar ett knappsats-kort.
 2. Macen visar en **8-siffrig kod** som notis (och i loggen). Skriv in den i headsetet. Samma IP-adress kan be om högst 3 koder per 5 minuter.

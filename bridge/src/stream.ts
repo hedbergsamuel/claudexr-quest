@@ -132,6 +132,8 @@ interface ServeProc {
   /** protocol number from serve_ready (1 = 0.4.0, 2 = 0.4.1 with audio) */
   protocol: number;
   readyWaiters: (() => void)[];
+  /** 0.4.1: the captures (video and audio sids) started in THIS process; only these end when it ends */
+  sids: Set<string>;
   lists: Map<string, { resolve: (w: WindowInfo[]) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
   /** frames that arrived for a sid we no longer know (a capture that did not stop) */
   stray: Map<string, number>;
@@ -220,7 +222,7 @@ export class StreamManager {
     }
     const proc = spawn(this.bin, ["serve"], { stdio: ["pipe", "pipe", "pipe"] });
     proc.stdin!.on("error", () => {});
-    const sv: ServeProc = { proc, ready: false, protocol: 0, readyWaiters: [], lists: new Map(), stray: new Map() };
+    const sv: ServeProc = { proc, ready: false, protocol: 0, readyWaiters: [], sids: new Set(), lists: new Map(), stray: new Map() };
     this.serve = sv;
     const q = new ByteQueue();
     proc.stdout!.on("data", (chunk: Buffer) => {
@@ -308,13 +310,15 @@ export class StreamManager {
     clearTimeout(sv.idleTimer);
     for (const w of sv.readyWaiters.splice(0)) w();
     const a = this.audio;
-    if (a && a.state !== "stopped" && a.state !== "error") {
+    if (a && sv.sids.has(a.sid) && a.state !== "stopped" && a.state !== "error") {
       this.audio = undefined;
       a.state = "error";
       a.error = spawnError ?? `the Mac helper ended (exit ${code})`;
       this.cb.onAudioState?.("error", `Mac-hjälparen avslutades; ljudet stoppades (${a.error}).`);
     }
-    const mine = [...this.shared].map((id) => this.streams.get(id)).filter((h): h is StreamHandle => !!h);
+    // 0.4.1: only the captures of THIS process. A replacement process may already run newer ones (after a privacy
+    // kill or an idle end); before, those were ended too, and a start right after a kill could fail.
+    const mine = [...this.shared].filter((id) => sv.sids.has(id)).map((id) => this.streams.get(id)).filter((h): h is StreamHandle => !!h);
     const lists = [...sv.lists.values()];
     sv.lists.clear();
     // An older helper (0.3.x) does not know "serve": it prints its usage and exits with 2 before "serve_ready".
@@ -358,6 +362,9 @@ export class StreamManager {
     if (n === STRAY_RESEND_STOP) this.serveSend(sv, { cmd: audio ? "audio-stop" : "stop", sid });
     else if (n === STRAY_KILL) {
       logError("spegling", `the Mac helper keeps capturing stream ${sid} after stop: ending the helper process`);
+      // 0.4.1: let go of it at once, so a start right after this gets a fresh process instead of the dying one.
+      if (this.serve === sv) this.serve = undefined;
+      clearTimeout(sv.idleTimer);
       sv.proc.kill("SIGTERM");
     }
   }
@@ -418,6 +425,7 @@ export class StreamManager {
     }
     const sid = `au${randomUUID().slice(0, 6)}`;
     this.audio = { sid, state: "starting", startedAt: Date.now(), framesOut: 0, bytesOut: 0, lastFrameAt: 0 };
+    sv.sids.add(sid);
     this.serveSend(sv, { cmd: "audio-start", sid, excludeBundles });
     return { ok: true, sid };
   }
@@ -549,6 +557,7 @@ export class StreamManager {
     if (this.useShared()) {
       const sv = this.ensureServe();
       this.shared.add(h.streamId);
+      sv.sids.add(h.streamId);
       this.serveSend(sv, {
         cmd: "start",
         sid: h.streamId,

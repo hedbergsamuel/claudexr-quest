@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pickWhisperModel, type VoiceConfig } from "./voice.js";
+import { parseDeviceTool, type DeviceTool } from "./devicetool.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 /** Root of the "Meta XR" folder (bridge/dist/src -> bridge/src -> root). */
@@ -77,6 +78,8 @@ export interface XrConfig {
   xrPermissions: boolean;
   permissionTimeoutS: number;
   voice: VoiceConfig;
+  /** 0.4.1 (punkt 8): program for headset install/launch/wired mode: adb (default) | metavr | hzdb. Only printed, never run by the bridge. */
+  deviceTool: DeviceTool;
 }
 
 export const DEFAULT_STREAM_POLICY: StreamPolicy = {
@@ -106,7 +109,7 @@ export const DEFAULT_STREAM_POLICY: StreamPolicy = {
  */
 export function loadConfig(): XrConfig {
   const file = path.join(stateDir(), "config.json");
-  let raw: Partial<{ helperMode: string; devMode: boolean; display: Partial<DisplayConfig>; maxStreams: number; stream: Partial<StreamPolicy>; bugsDir: string; captureBin: string; autoPanels: boolean; xrPermissions: boolean; permissionTimeoutS: number; voice: Partial<VoiceConfig> }> = {};
+  let raw: Partial<{ deviceTool: string; helperMode: string; devMode: boolean; display: Partial<DisplayConfig>; maxStreams: number; stream: Partial<StreamPolicy>; bugsDir: string; captureBin: string; autoPanels: boolean; xrPermissions: boolean; permissionTimeoutS: number; voice: Partial<VoiceConfig> }> = {};
   if (fs.existsSync(file)) {
     try {
       raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -138,6 +141,7 @@ export function loadConfig(): XrConfig {
     },
     maxStreams: Math.max(1, Math.min(8, Number(process.env.CLAUDEXR_MAX_STREAMS ?? raw.maxStreams ?? 4))),
     helperMode: (process.env.CLAUDEXR_HELPER_MODE ?? raw.helperMode) === "perStream" ? "perStream" : "shared",
+    deviceTool: parseDeviceTool(process.env.CLAUDEXR_DEVICE_TOOL ?? raw.deviceTool) ?? "adb",
     voice: {
       engine: (process.env.CLAUDEXR_STT_ENGINE as VoiceConfig["engine"]) || raw.voice?.engine || "whisper-cpp",
       whisperBin: resolveBin(process.env.CLAUDEXR_WHISPER_BIN || raw.voice?.whisperBin || "whisper-cli"), // brew install whisper-cpp

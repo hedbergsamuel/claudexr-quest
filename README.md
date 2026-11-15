@@ -245,5 +245,5 @@ Standard är **på**. Claude antecknar fel och idéer kort (`xr_dev`), och brygg
 | `quest-app/` | Android-projektet (Spatial SDK 0.15.0) |
 | `mac-helper/` | Swift-CLI `claudexr-capture` |
 | `bugs/` | Buggrapporter i dev-läge (skapas vid behov) |
-| `PROGRESS.md` | Byggloggen, med NÄSTA STEG överst |
-| `REVIEW.md`, `review/` | Granskningen. Status per fynd finns i PROGRESS.md |
+| `docs/historik/PROGRESS.md` | Byggloggen, med NÄSTA STEG överst |
+| `docs/historik/REVIEW.md`, `docs/historik/review/` | Granskningen. Status per fynd finns i docs/historik/PROGRESS.md |

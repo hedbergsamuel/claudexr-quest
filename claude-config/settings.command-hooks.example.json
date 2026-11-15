@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-context.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-context.mjs\"",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-context.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-context.mjs\"",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-permission.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-permission.mjs\"",
             "timeout": 150
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-activity.mjs\"",
             "timeout": 3
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-activity.mjs\"",
             "timeout": 3
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-activity.mjs\"",
             "timeout": 3
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/<användare>/Downloads/Meta XR/claude-config/hooks/xr-activity.mjs\"",
+            "command": "node \"/Users/<användare>/ClaudeXR/claude-config/hooks/xr-activity.mjs\"",
             "timeout": 3
           }
         ]

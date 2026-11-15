@@ -39,6 +39,7 @@ import { XrFlag } from "./flag.js";
 import { CaffeinateAdapter, KeepAwake, type KeepAwakeAdapter } from "./keepawake.js";
 import { BrightnessGuard, HelperBrightnessAdapter, realDimAllowed } from "./brightness.js";
 import { VideoFlow } from "./videoflow.js";
+import { InputGate, InputRouter, NullInputSink, type Rect } from "./input.js";
 import { correctTerms, matchAB, matchCommand, matchOption, matchVerdict, transcribePcm, LocalCommand, SAMPLE_RATE, VoiceInbox } from "./voice.js";
 import { VoiceRouter } from "./voiceroute.js";
 import { BugStore, Component } from "./devmode.js";
@@ -172,6 +173,10 @@ export class XrHub {
   private audioSeq = 0;
   private audioDropped = 0;
   private audioLastError?: string;
+  /** 0.4.1 (punkt 6): main display in global Mac points, known after calibration or after the input gate opened */
+  private displayRectPt?: Rect;
+  /** 0.4.1 (punkt 6): input gate + mapping. The sink sends nothing to the Mac (no CGEvent in 0.4.1). */
+  readonly input = new InputRouter(new InputGate(), new NullInputSink(), (id) => this.inputTarget(id));
   private headset: HeadsetConn | null = null;
   private panels = new Map<string, OpenPanel>();
   private heartbeat?: NodeJS.Timeout;
@@ -380,6 +385,7 @@ export class XrHub {
       voice: { ...this.voiceRouter.info(), channelEnabled: !!this.o.config.voice.channel },
       helperMode: this.streams.helperMode(),
       audio: this.audioStatus(),
+      input: this.input.stats(),
       streams: [...this.streams.streams.values()].map((s) => ({
         streamId: s.streamId,
         title: s.title,
@@ -711,6 +717,7 @@ export class XrHub {
 
   /** Panic button / "close everything": panels, streams (display too), brightness. */
   private emergency(): CommandResult {
+    this.input.off("emergency");
     this.streams.stopAudio();
     const r = this.clear();
     this.displaySuppressed = true;
@@ -1009,6 +1016,25 @@ export class XrHub {
     ws.send(encodeAudioFrame("mac", this.audioSeq++, captureUs, pcm));
   }
 
+  /**
+   * Target rectangle on the Mac for a panel. Only the main display stream ("display", streamed from display 0 =
+   * main) has one: its origin is (0,0) in global points. Window panels: null until the helper reports window
+   * frames (origin), which it does not yet. Everything else: null.
+   */
+  private inputTarget(panelId: string): Rect | null {
+    if (panelId !== "display" || !this.panels.has("display")) return null;
+    return this.displayRectPt ?? null;
+  }
+
+  private async loadDisplayRect() {
+    try {
+      const d = await this.streams.runJson<{ widthPt: number; heightPt: number }>(["display-info"]);
+      if (d.widthPt > 0 && d.heightPt > 0) this.displayRectPt = { x: 0, y: 0, w: d.widthPt, h: d.heightPt };
+    } catch (e) {
+      log("input: display-info failed:", (e as Error).message);
+    }
+  }
+
   private audioStatus() {
     const a = this.streams.audio;
     const secs = a ? Math.max(1, (Date.now() - a.startedAt) / 1000) : 1;
@@ -1282,6 +1308,7 @@ export class XrHub {
     type DisplayInfo = { widthPt: number; heightPt: number; widthMm: number; heightMm: number; widthPx: number; heightPx: number };
     const d = await this.streams.runJson<DisplayInfo>(["display-info"]);
     if (!(d.widthMm > 0 && d.widthPt > 0)) return { status: "error", data: { error: "display-info returned no physical size" } };
+    this.displayRectPt = { x: 0, y: 0, w: d.widthPt, h: d.heightPt };
     const payload = "CLAUDEXR-CAL-" + randomBytes(8).toString("hex").toUpperCase().slice(0, 7);
     const qr = QRCode.create(payload, { version: 2, errorCorrectionLevel: "M" });
     const n = qr.modules.size; // 25 for version 2
@@ -1431,6 +1458,7 @@ export class XrHub {
         this.voicePanelOpen = false;
         this.flagOffSync(); // heartbeat lost / 1006 / unpair all end up here
         // Privacy: never keep streaming into a headset that is gone.
+        this.input.off("headset_gone");
         this.streams.stopAudio();
         this.streams.stop();
         this.videoWs?.close(4000, "headset gone");
@@ -1561,6 +1589,20 @@ export class XrHub {
       case "emergency_close":
         this.emergency();
         this.toast("✓ Allt stängt, ljusstyrkan återställd", "done");
+        return;
+      case "input_gate":
+        // Only this message (sent by the app for a physical button press) can open the gate. Voice and MCP have no path.
+        if (msg.on === true) {
+          this.input.enable("headset-button");
+          if (!this.displayRectPt) void this.loadDisplayRect();
+          this.toast("Inmatning till Macen: PÅ (testläge, inget skickas ännu)", "attention");
+        } else {
+          this.input.off("headset");
+          this.toast("Inmatning till Macen: AV", "done");
+        }
+        return;
+      case "pointer":
+        this.input.handle(msg.event);
         return;
       case "restart_display":
         this.displaySuppressed = false;

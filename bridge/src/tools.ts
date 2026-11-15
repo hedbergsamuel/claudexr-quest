@@ -43,6 +43,7 @@ export function statusLine(s: XrStatus | null): string {
   const d = s.display;
   const extra = d ? [`display: ${d.alwaysOn ? "always on" : "manual"}${d.suppressed ? " (stopped; restarts on reconnect/xr_stream display)" : ""}${d.dimEnabled ? `, dimming ${d.dimmed ? "ACTIVE" : "off now"}` : ""}; mic ${s.mic?.listening ? "listening" : "idle"}`] : [];
   if (s.helperMode && s.helperMode !== "shared") extra.push(`helper: ${s.helperMode}`);
+  if (s.input?.enabled) extra.push(`input: ON (test mode, sink ${s.input.sink}: nothing reaches the Mac; ${s.input.delivered} mapped)`);
   if (s.audio && s.audio.state !== "off") extra.push(`audio: ${s.audio.state}${s.audio.state === "live" ? ` ${s.audio.kbps} kbit/s, dropped ${s.audio.dropped}` : ""}${s.audio.error ? ` (${s.audio.error})` : ""}`);
   if (s.mic?.panelOpen) extra.push('voice system/near-head "Röst" (push-to-talk panel in the headset; close with xr_panel close id:voice)');
   if (s.voice) extra.push(`voice: next spoken message goes ${{ channel: "to the voice channel", rewake: "to Claude at once (wakes the idle session)", working: "to Claude at the next tool step", queued: "with the next prompt (no session is working or waiting)" }[s.voice.route]}${s.voice.queued ? `, ${s.voice.queued} waiting` : ""}`);

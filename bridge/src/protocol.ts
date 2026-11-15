@@ -150,7 +150,11 @@ export type HeadsetToBridge =
   /** 0.4.0: the near voice panel was opened/closed in the headset (so xr_panel list shows it and close id:voice works) */
   | { type: "voice_panel"; open: boolean }
   /** 0.3.0: "Starta skärmen": (re)start the always-on display stream */
-  | { type: "restart_display" };
+  | { type: "restart_display" }
+  /** 0.4.1 (punkt 6): the PHYSICAL input button in the headset turned input to the Mac on/off. Nothing reaches the Mac yet (NullInputSink). */
+  | { type: "input_gate"; on: boolean }
+  /** 0.4.1 (punkt 6): pointer on a stream panel (u,v 0..1). Untrusted; validated by parsePointer. */
+  | { type: "pointer"; event: unknown };
 
 /** Outcome of a command, as seen by the MCP tools. */
 export type CommandStatus = "answered" | "shown" | "updated" | "cleared" | "dismissed" | "timeout" | "not_connected" | "not_found" | "error";
@@ -191,6 +195,8 @@ export interface XrStatus {
   voice?: { queued: number; route: "channel" | "rewake" | "working" | "queued"; waiters: number; channelEnabled?: boolean };
   /** 0.4.1: Mac system audio */
   audio?: { state: string; frames: number; dropped: number; kbps: number; error?: string };
+  /** 0.4.1: input gate (punkt 6); sink "null" = nothing is sent to the Mac */
+  input?: { enabled: boolean; sensitive: boolean; sink: string; delivered: number; dropped: number; lastOff?: string };
   /** 0.4.0: "shared" (one helper process, several streams) or "perStream ..." (old helper / rollback) */
   helperMode?: string;
   bridge: { version: string; host: string; port: number; localPort: number; lanAddresses: string[]; mdnsType: string; pid: number; tlsFingerprint: string };
